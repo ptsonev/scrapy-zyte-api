@@ -67,4 +67,4 @@ def _get_all_cookies(
     request: Request, cookie_jars: Dict[Any, CookieJar]
 ) -> List[Cookie]:
     cookie_jar = _get_cookie_jar(request, cookie_jars)
-    return list(cookie_jar.jar)
+    return list({c.name: c for c in cookie_jar.jar}.values())
