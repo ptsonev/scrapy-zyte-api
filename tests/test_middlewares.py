@@ -60,19 +60,21 @@ def spider_output_processor(middleware, request, spider):
 async def test_preserve_delay(mw_cls, processor, settings, preserve):
     crawler = get_crawler(settings_dict=settings)
     await crawler.crawl("a")
+    assert crawler.engine
+    assert crawler.spider
     spider = crawler.spider
 
     middleware = create_instance(mw_cls, settings=crawler.settings, crawler=crawler)
 
     # AutoThrottle does this.
-    spider.download_delay = 5
+    spider.download_delay = 5  # type: ignore[attr-defined]
 
     # No effect on non-Zyte-API requests
     request = Request("https://example.com")
     processor(middleware, request, spider)
     assert "download_slot" not in request.meta
     _, slot = crawler.engine.downloader._get_slot(request, spider)
-    assert slot.delay == spider.download_delay
+    assert slot.delay == spider.download_delay  # type: ignore[attr-defined]
 
     # On Zyte API requests, the download slot is changed, and its delay may be
     # set to 0 depending on settings.
@@ -136,8 +138,8 @@ async def test_max_requests(caplog):
                 for i in range(spider_requests):
                     meta = {"zyte_api": {"browserHtml": True}}
 
-                    # Alternating requests between ZAPI and non-ZAPI tests if
-                    # ZYTE_API_MAX_REQUESTS solely limits ZAPI Requests.
+                    # Alternating requests between ZAPI and non-ZAPI verifies
+                    # that ZYTE_API_MAX_REQUESTS solely limits ZAPI requests.
 
                     if i % 2:
                         yield Request(
@@ -166,9 +168,58 @@ async def test_max_requests(caplog):
         f"Maximum Zyte API requests for this crawl is set at {zapi_max_requests}"
         in caplog.text
     )
-    assert crawler.stats.get_value("scrapy-zyte-api/success") <= zapi_max_requests
-    assert crawler.stats.get_value("scrapy-zyte-api/processed") <= zapi_max_requests
+    assert crawler.stats
+    assert crawler.stats.get_value("scrapy-zyte-api/success") == zapi_max_requests
+    assert crawler.stats.get_value("scrapy-zyte-api/processed") == zapi_max_requests
     assert crawler.stats.get_value("item_scraped_count") <= zapi_max_requests + 6
+    assert crawler.stats.get_value("finish_reason") == "closespider_max_zapi_requests"
+    assert (
+        crawler.stats.get_value(
+            "downloader/exception_type_count/scrapy.exceptions.IgnoreRequest"
+        )
+        > 0
+    )
+
+
+@ensureDeferred
+async def test_max_requests_race_condition(caplog):
+    spider_requests = 8
+    zapi_max_requests = 1
+
+    with MockServer(DelayedResource) as server:
+
+        class TestSpider(Spider):
+            name = "test_spider"
+
+            def start_requests(self):
+                for i in range(spider_requests):
+                    meta = {"zyte_api": {"browserHtml": True}}
+                    yield Request("https://example.com", meta=meta, dont_filter=True)
+
+            def parse(self, response):
+                yield Item()
+
+        settings = {
+            "DOWNLOADER_MIDDLEWARES": {
+                "scrapy_zyte_api.ScrapyZyteAPIDownloaderMiddleware": 633
+            },
+            "ZYTE_API_MAX_REQUESTS": zapi_max_requests,
+            "ZYTE_API_URL": server.urljoin("/"),
+            **SETTINGS,
+        }
+
+        crawler = get_crawler(TestSpider, settings_dict=settings)
+        with caplog.at_level("INFO"):
+            await crawler.crawl()
+
+    assert (
+        f"Maximum Zyte API requests for this crawl is set at {zapi_max_requests}"
+        in caplog.text
+    )
+    assert crawler.stats
+    assert crawler.stats.get_value("scrapy-zyte-api/success") == zapi_max_requests
+    assert crawler.stats.get_value("scrapy-zyte-api/processed") == zapi_max_requests
+    assert crawler.stats.get_value("item_scraped_count") == zapi_max_requests
     assert crawler.stats.get_value("finish_reason") == "closespider_max_zapi_requests"
     assert (
         crawler.stats.get_value(
@@ -197,6 +248,7 @@ async def test_forbidden_domain_start_url():
         crawler = get_crawler(TestSpider, settings_dict=settings)
         await crawler.crawl()
 
+    assert crawler.stats
     assert crawler.stats.get_value("finish_reason") == "failed_forbidden_domain"
 
 
@@ -223,6 +275,7 @@ async def test_forbidden_domain_start_urls():
         crawler = get_crawler(TestSpider, settings_dict=settings)
         await crawler.crawl()
 
+    assert crawler.stats
     assert crawler.stats.get_value("finish_reason") == "failed_forbidden_domain"
 
 
@@ -248,6 +301,7 @@ async def test_some_forbidden_domain_start_url():
         crawler = get_crawler(TestSpider, settings_dict=settings)
         await crawler.crawl()
 
+    assert crawler.stats
     assert crawler.stats.get_value("finish_reason") == "finished"
 
 
@@ -272,6 +326,7 @@ async def test_follow_up_forbidden_domain_url():
         crawler = get_crawler(TestSpider, settings_dict=settings)
         await crawler.crawl()
 
+    assert crawler.stats
     assert crawler.stats.get_value("finish_reason") == "finished"
 
 
@@ -302,6 +357,7 @@ async def test_forbidden_domain_with_partial_start_request_consumption():
         crawler = get_crawler(TestSpider, settings_dict=settings)
         await crawler.crawl()
 
+    assert crawler.stats
     assert crawler.stats.get_value("finish_reason") == "failed_forbidden_domain"
 
 
@@ -331,7 +387,7 @@ async def test_spm_conflict_smartproxy(setting, attribute, conflict):
         start_urls = ["data:,"]
 
     if attribute is not None:
-        SPMSpider.zyte_smartproxy_enabled = attribute
+        SPMSpider.zyte_smartproxy_enabled = attribute  # type: ignore[attr-defined]
 
     settings = {
         "ZYTE_API_TRANSPARENT_MODE": True,
@@ -348,6 +404,7 @@ async def test_spm_conflict_smartproxy(setting, attribute, conflict):
     crawler = get_crawler(SPMSpider, settings_dict=settings)
     await crawler.crawl()
     expected = "plugin_conflict" if conflict else "finished"
+    assert crawler.stats
     assert crawler.stats.get_value("finish_reason") == expected
 
 
@@ -385,7 +442,7 @@ async def test_spm_conflict_crawlera(setting, attribute, conflict):
         start_urls = ["data:,"]
 
     if attribute is not None:
-        CrawleraSpider.crawlera_enabled = attribute
+        CrawleraSpider.crawlera_enabled = attribute  # type: ignore[attr-defined]
 
     settings = {
         "ZYTE_API_TRANSPARENT_MODE": True,
@@ -402,6 +459,7 @@ async def test_spm_conflict_crawlera(setting, attribute, conflict):
     crawler = get_crawler(CrawleraSpider, settings_dict=settings)
     await crawler.crawl()
     expected = "plugin_conflict" if conflict else "finished"
+    assert crawler.stats
     assert crawler.stats.get_value("finish_reason") == expected, (
         setting,
         attribute,

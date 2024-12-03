@@ -1,6 +1,20 @@
 Changes
 =======
 
+0.25.1 (2024-11-12)
+-------------------
+
+* :setting:`DOWNLOAD_MAXSIZE` and :setting:`DOWNLOAD_WARNSIZE` are now also
+  enforced on requests sent through Zyte API.
+
+0.25.0 (2024-10-22)
+-------------------
+
+* Added official Python 3.13 support, removed official Python 3.8 support.
+
+* Fixed a race condition that could allow more Zyte API requests than those
+  configured in the :setting:`ZYTE_API_MAX_REQUESTS` setting.
+
 0.24.0 (2024-10-07)
 -------------------
 
