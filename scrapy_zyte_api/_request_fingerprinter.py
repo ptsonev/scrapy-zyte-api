@@ -73,7 +73,7 @@ else:
         def _normalize_params(self, api_params):
             api_params["url"] = canonicalize_url(
                 api_params["url"],
-                keep_fragments=True,
+                keep_fragments=_uses_browser(api_params),
             )
 
             if "httpRequestText" in api_params:
