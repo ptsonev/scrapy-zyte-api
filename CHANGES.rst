@@ -1,6 +1,29 @@
 Changes
 =======
 
+0.27.0 (2025-02-04)
+-------------------
+
+* :ref:`scrapy-poet integration <scrapy-poet>` now supports
+  :class:`~zyte_common_items.Serp` injection from :ref:`Zyte API automatic
+  extraction <zapi-extract>`.
+
+* :class:`~.SessionConfig` now supports a
+  :meth:`~.SessionConfig.process_request` method, which can be used to modify
+  requests based on data from the initialization of the session they have been
+  assigned.
+
+* The new :func:`~.get_request_session_id` function allows getting the session
+  ID that has been assigned to a given request.
+
+0.26.0 (2025-01-15)
+-------------------
+
+* :ref:`referer` is now disabled by default for Zyte API requests. This can be
+  configured with the new :setting:`ZYTE_API_REFERRER_POLICY` setting.
+
+* CI improvements.
+
 0.25.2 (2024-12-30)
 -------------------
 
