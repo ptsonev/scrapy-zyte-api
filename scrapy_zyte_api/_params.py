@@ -547,7 +547,7 @@ def _set_http_response_body_from_request(
     if not any(api_params.get(k) for k in _BROWSER_OR_EXTRACT_KEYS):
         api_params.setdefault("httpResponseBody", True)
     elif api_params.get("httpResponseBody") is False:
-        logger.warning(
+        logger.debug(
             f"Request {request} unnecessarily defines the Zyte API "
             f"'httpResponseBody' parameter with its default value, False. "
             f"It will not be sent to the server."
@@ -712,7 +712,7 @@ def _unset_unneeded_api_params(
         if value != default_value:
             continue
         if param not in default_params or default_params.get(param) == default_value:
-            logger.warning(
+            logger.debug(
                 f"Request {request} unnecessarily defines the Zyte API {param!r} "
                 f"parameter with its default value, {default_value!r}. It will "
                 f"not be sent to the server."
