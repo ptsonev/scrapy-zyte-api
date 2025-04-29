@@ -1,6 +1,90 @@
 Changes
 =======
 
+0.29.0 (2025-03-20)
+-------------------
+
+-   Improve the removal and mapping of proxy headers accidentally included in
+    requests:
+
+    -   Remove or map :ref:`Zyte API proxy mode headers <zapi-proxy-headers>`
+        (``Zyte-…``), not only :ref:`Smart Proxy Manager headers
+        <spm-request-headers>` (``X-Crawlera-…``).
+
+    -   Remove or map headers defined through
+        :http:`request:customHttpRequestHeaders`, not only those defined in
+        :attr:`Request.headers <scrapy.http.Request.headers>`.
+
+-   Support :meth:`~scrapy.Spider.start_requests` yielding items, which is
+    possible since Scrapy 2.12.
+
+
+0.28.0 (2025-02-18)
+-------------------
+
+* Added :ref:`automatic mapping <automap>` support for new Zyte API request
+  fields:
+  :http:`request:customAttributes`,
+  :http:`request:customAttributesOptions`,
+  :http:`request:ipType`,
+  :http:`request:followRedirect`,
+  :http:`request:forumThread`,
+  :http:`request:forumThreadOptions`,
+  :http:`request:jobPostingNavigation`,
+  :http:`request:jobPostingNavigationOptions`,
+  :http:`request:networkCapture`,
+  :http:`request:serp`,
+  :http:`request:serpOptions`,
+  :http:`request:session`,
+  :http:`request:tags`.
+
+  * You will now be warned when using their default values unnecessarily.
+
+  * By default, the following fields no longer affect request fingerprinting
+    (i.e. 2 request identical except for the value of that field are now
+    considered duplicate requests): :http:`request:ipType`,
+    :http:`request:session`.
+
+  * When enabling :http:`request:serp`, :http:`request:httpResponseBody` and
+    :http:`request:httpResponseHeaders` will no longer be enabled by default,
+    and :ref:`request header mapping <request-header-mapping>` is disabled.
+
+* Session pool IDs, of server-managed sessions (:http:`request:sessionContext`)
+  or :ref:`set through the session management API <session-pools>`, now affect
+  request fingerprinting: 2 requests identical except for their session pool ID
+  are *not* considered duplicate requests any longer.
+
+* When it is not clear whether a request will use browser rendering or not,
+  e.g. an :ref:`automatic extraction request <zapi-extract>` without an
+  :http:`extractFrom <request:productOptions.extractFrom>` value, the URL
+  fragment is now taken into account for request fingerprinting, i.e.
+  ``https://example.com#a`` and ``https://example.com#b`` are *not* considered
+  duplicate requests anymore in those scenarios.
+
+* New setting: :setting:`ZYTE_API_SESSION_MAX_CHECK_FAILURES`.
+
+* The :reqmeta:`download_latency` request metadata key is now set for Zyte API
+  requests if it can be done without causing the :ref:`AutoThrottle extension
+  <topics-autothrottle>` to delay Zyte API requests, e.g. if
+  :setting:`AUTOTHROTTLE_ENABLED` is ``False`` (default) or you are using
+  Scrapy 2.12+.
+
+* Fixes ``"auto"`` being considered the default value of :http:`request:device`
+  instead of ``"desktop"``.
+
+* When using :doc:`scrapy-poet <scrapy-poet:index>` 0.26.0 or higher, the
+  scrapy-zyte-api add-on no longer adds
+  :class:`scrapy_poet.InjectionMiddleware` to
+  :setting:`DOWNLOADER_MIDDLEWARES`. Use the scrapy-poet add-on instead to
+  enable that and other Scrapy components required for scrapy-poet setup:
+
+  .. code-block:: python
+
+    ADDONS = {
+        "scrapy_poet.Addon": 300,
+        "scrapy_zyte_api.Addon": 500,
+    }
+
 0.27.0 (2025-02-04)
 -------------------
 
@@ -381,12 +465,12 @@ Changes
 0.12.1 (2023-09-29)
 -------------------
 
-* The new ``_ZYTE_API_USER_AGENT`` setting allows customizing the user agent 
+* The new ``_ZYTE_API_USER_AGENT`` setting allows customizing the user agent
   string reported to Zyte API.
-  
-  Note that this setting is only meant for libraries and frameworks built on 
-  top of scrapy-zyte-api, to report themselves to Zyte API, for client software 
-  tracking and monitoring purposes. The value of this setting is *not* the 
+
+  Note that this setting is only meant for libraries and frameworks built on
+  top of scrapy-zyte-api, to report themselves to Zyte API, for client software
+  tracking and monitoring purposes. The value of this setting is *not* the
   ``User-Agent`` header sent to upstream websites when using Zyte API.
 
 

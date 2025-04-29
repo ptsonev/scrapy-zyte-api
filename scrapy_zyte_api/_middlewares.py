@@ -6,6 +6,7 @@ from scrapy.exceptions import IgnoreRequest
 from zyte_api import RequestError
 
 from ._params import _ParamParser
+from .utils import _AUTOTHROTTLE_DONT_ADJUST_DELAY_SUPPORT
 
 logger = getLogger(__name__)
 _start_requests_processed = object()
@@ -29,6 +30,9 @@ class _BaseMiddleware:
     def slot_request(self, request, spider, force=False):
         if not force and self._param_parser.parse(request) is None:
             return
+
+        if _AUTOTHROTTLE_DONT_ADJUST_DELAY_SUPPORT:
+            request.meta.setdefault("autothrottle_dont_adjust_delay", True)
 
         downloader = self._crawler.engine.downloader
         try:
@@ -176,11 +180,12 @@ class ScrapyZyteAPISpiderMiddleware(_BaseMiddleware):
         # Mark start requests and reports to the downloader middleware the
         # number of them once all have been processed.
         count = 0
-        for request in start_requests:
-            request.meta["is_start_request"] = True
-            self._process_output_request(request, spider)
-            yield request
-            count += 1
+        for item_or_request in start_requests:
+            if isinstance(item_or_request, Request):
+                count += 1
+                item_or_request.meta["is_start_request"] = True
+                self._process_output_request(item_or_request, spider)
+            yield item_or_request
         self._send_signal(_start_requests_processed, count=count)
 
     def _process_output_request(self, request, spider):
@@ -204,7 +209,6 @@ class ScrapyZyteAPISpiderMiddleware(_BaseMiddleware):
 
 
 class ScrapyZyteAPIRefererSpiderMiddleware:
-
     @classmethod
     def from_crawler(cls, crawler):
         return cls(crawler)

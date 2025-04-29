@@ -339,7 +339,6 @@ async def test_url_override(params, close_reason, stats, mockserver):
 
 
 class ConstantChecker:
-
     def __init__(self, result):
         self._result = result
 
@@ -410,7 +409,6 @@ class UnexpectedExceptionUseChecker(UnexpectedExceptionChecker, UseChecker):
 
 
 class OnlyPassFirstInitChecker:
-
     def __init__(self):
         self.on_first_init = True
 
@@ -633,7 +631,6 @@ async def test_checker_location(postal_code, url, close_reason, stats, mockserve
 
 
 class CloseSpiderURLChecker:
-
     def check(self, response: Response, request: Request) -> bool:
         if "fail" in request.url:
             raise CloseSpider("closed_by_checker")
@@ -771,6 +768,54 @@ async def test_max_bad_inits_per_pool(global_setting, pool_setting, value, mocks
     ),
 )
 @ensureDeferred
+async def test_max_check_failures(setting, value, mockserver):
+    retry_times = 2
+    settings = {
+        "RETRY_TIMES": retry_times,
+        "ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY",
+        "ZYTE_API_SESSION_CHECKER": "tests.test_sessions.FalseUseChecker",
+        "ZYTE_API_SESSION_ENABLED": True,
+        "ZYTE_API_SESSION_PARAMS": {"url": "https://example.com"},
+        "ZYTE_API_SESSION_POOL_SIZE": 1,
+        "ZYTE_API_URL": mockserver.urljoin("/"),
+    }
+    if setting is not None:
+        settings["ZYTE_API_SESSION_MAX_CHECK_FAILURES"] = setting
+
+    class TestSpider(Spider):
+        name = "test"
+        start_urls = ["https://example.com"]
+
+        def parse(self, response):
+            pass
+
+    crawler = await get_crawler(settings, spider_cls=TestSpider, setup_engine=False)
+    await crawler.crawl()
+
+    session_stats = {
+        k: v
+        for k, v in crawler.stats.get_stats().items()
+        if k.startswith("scrapy-zyte-api/sessions")
+    }
+    assert session_stats == {
+        "scrapy-zyte-api/sessions/pools/example.com/init/check-passed": floor(
+            (retry_times + 1) / value
+        )
+        + 1,
+        "scrapy-zyte-api/sessions/pools/example.com/use/check-failed": retry_times + 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    (
+        (None, 1),
+        (0, 1),
+        (1, 1),
+        (2, 2),
+    ),
+)
+@ensureDeferred
 async def test_max_errors(setting, value, mockserver):
     retry_times = 2
     settings = {
@@ -810,7 +855,6 @@ async def test_max_errors(setting, value, mockserver):
 
 
 class DomainChecker:
-
     def check(self, response: Response, request: Request) -> bool:
         domain = urlparse_cached(request).netloc
         return "fail" not in domain
@@ -1212,10 +1256,11 @@ async def test_addon(manual_settings, addon_settings):
             "ZYTE_API_TRANSPARENT_MODE": True,
             "ZYTE_API_SESSION_ENABLED": True,
             **manual_settings,
-        }
+        },
+        poet=False,
     )
     addon_crawler = await get_crawler(
-        {"ZYTE_API_SESSION_ENABLED": True, **addon_settings}, use_addon=True
+        {"ZYTE_API_SESSION_ENABLED": True, **addon_settings}, use_addon=True, poet=False
     )
     assert serialize_settings(crawler.settings) == serialize_settings(
         addon_crawler.settings
@@ -1234,7 +1279,6 @@ async def test_session_config(mockserver):
         ]
     )
     class CustomSessionConfig(SessionConfig):
-
         def params(self, request: Request):
             return {
                 "actions": [
@@ -1348,7 +1392,6 @@ async def test_session_config_check_meta(mockserver):
 
     @session_config(["example.com"])
     class CustomSessionConfig(SessionConfig):
-
         def check(self, response, request):
             return (
                 bool(self.location(request))
@@ -1410,7 +1453,6 @@ async def test_session_config_enabled(mockserver):
 
     @session_config(["enabled.example", "disabled.example"])
     class CustomSessionConfig(SessionConfig):
-
         def enabled(self, request: Request):
             return "enabled" in urlparse_cached(request).netloc
 
@@ -1484,7 +1526,6 @@ async def test_session_config_location(settings, meta, used, mockserver):
 
     @session_config(["postal-code-10001.example"])
     class CustomSessionConfig(SessionConfig):
-
         def location(self, request: Request):
             return super().location(request) or {"postalCode": "10001"}
 
@@ -1590,7 +1631,6 @@ async def test_session_config_location_bad(settings, meta, used, mockserver):
 
     @session_config(["postal-code-10001.example"])
     class CustomSessionConfig(SessionConfig):
-
         def location(self, request: Request):
             return {"postalCode": "10001"}
 
@@ -1667,7 +1707,6 @@ async def test_session_config_params_location(mockserver):
 
     @session_config(["postal-code-10001.example"])
     class CustomSessionConfig(SessionConfig):
-
         def params(self, request: Request):
             return {
                 "actions": [
@@ -1740,7 +1779,6 @@ async def test_session_config_params_location_no_set_location(mockserver):
 
     @session_config(["example.com"])
     class CustomSessionConfig(SessionConfig):
-
         def params(self, request: Request):
             postal_code = self.location(request)["postalCode"]
             return {
@@ -1860,7 +1898,6 @@ async def test_session_config_params_precedence(
 
     @session_config(["postal-code-10001.example"])
     class CustomSessionConfig(SessionConfig):
-
         def params(self, request: Request):
             return {
                 "actions": [
@@ -1931,7 +1968,6 @@ async def test_session_config_params_error(mockserver):
 
     @session_config(["example.com"])
     class CustomSessionConfig(SessionConfig):
-
         def params(self, request: Request):
             raise Exception
 
@@ -2028,7 +2064,6 @@ async def test_session_config_pool_error(mockserver):
 
     @session_config(["example.com"])
     class CustomSessionConfig(SessionConfig):
-
         def pool(self, request: Request):
             raise Exception
 
@@ -2088,7 +2123,6 @@ async def test_session_config_process_request_change_request(mockserver):
 
     @session_config("example.com")
     class CustomSessionConfig(SessionConfig):
-
         def __init__(self, crawler):
             super().__init__(crawler)
             self.session_data = {}
@@ -2146,7 +2180,6 @@ async def test_session_config_process_request_new_request(mockserver):
 
     @session_config("example.com")
     class CustomSessionConfig(SessionConfig):
-
         def __init__(self, crawler):
             super().__init__(crawler)
             self.session_data = {}
@@ -2211,7 +2244,6 @@ async def test_location_session_config(mockserver):
         ]
     )
     class CustomSessionConfig(LocationSessionConfig):
-
         def location_params(
             self, request: Request, location: Dict[str, Any]
         ) -> Dict[str, Any]:
@@ -2325,7 +2357,6 @@ async def test_location_session_config_no_methods(mockserver):
         ]
     )
     class CustomSessionConfig(LocationSessionConfig):
-
         def pool(self, request: Request) -> str:
             domain = urlparse_cached(request).netloc
             if domain == "postal-code-10001-alternative.example":
@@ -2392,7 +2423,6 @@ async def test_location_session_config_no_location(mockserver):
 
     @session_config(["postal-code-10001.example", "a.example"])
     class CustomSessionConfig(LocationSessionConfig):
-
         def location_params(
             self, request: Request, location: Dict[str, Any]
         ) -> Dict[str, Any]:
@@ -2698,7 +2728,6 @@ async def test_empty_queue_limit(mockserver):
 
 
 class SessionIDRemovingDownloaderMiddleware:
-
     def process_exception(
         self, request: Request, exception: Exception, spider: Spider
     ) -> Union[Request, None]:
@@ -2903,7 +2932,6 @@ async def test_provider(mockserver):
 
 
 class ExceptionRaisingDownloaderMiddleware:
-
     async def process_request(self, request: Request, spider: Spider) -> None:
         if request.meta.get("_is_session_init_request", False):
             return

@@ -51,7 +51,8 @@ def is_session_init_request(request):
 
 
 class SessionRetryFactory(RetryFactory):
-    temporary_download_error_stop = stop_after_attempt(1)
+    download_error_stop = stop_after_attempt(1)  # python-zyte-api >= 0.7.0
+    temporary_download_error_stop = stop_after_attempt(1)  # python-zyte-api < 0.7.0
 
 
 SESSION_DEFAULT_RETRY_POLICY = SessionRetryFactory().build()
@@ -120,8 +121,7 @@ except ImportError:  # pragma: no cover
             return new_request
         stats.inc_value(f"{stats_base_key}/max_reached")
         logger.error(
-            "Gave up retrying %(request)s (failed %(retry_times)d times): "
-            "%(reason)s",
+            "Gave up retrying %(request)s (failed %(retry_times)d times): %(reason)s",
             {"request": request, "retry_times": retry_times, "reason": reason},
             extra={"spider": spider},
         )
@@ -452,7 +452,6 @@ try:
 except ImportError:
 
     class SessionConfigRulesRegistry:
-
         def session_config_cls(self, request: Request) -> Type[SessionConfig]:
             return SessionConfig
 
@@ -521,8 +520,7 @@ except ImportError:
             and session configs are registered in their own rule registry.
             """
             raise RuntimeError(
-                "To use the @session_config decorator you first must install "
-                "web-poet."
+                "To use the @session_config decorator you first must install web-poet."
             )
 
 else:
@@ -531,14 +529,15 @@ else:
     from web_poet.rules import Strings
 
     class SessionConfigRulesRegistry(RulesRegistry):  # type: ignore[no-redef]
-
         def __init__(self):
             rules = [ApplyRule(for_patterns=Patterns(include=[""]), use=SessionConfig)]  # type: ignore[arg-type]
             super().__init__(rules=rules)
 
         def session_config_cls(self, request: Request) -> Type[SessionConfig]:
             cls = SessionConfig
-            overrides: Dict[Type[SessionConfig], Type[SessionConfig]] = self.overrides_for(request.url)  # type: ignore[assignment]
+            overrides: Dict[Type[SessionConfig], Type[SessionConfig]] = (
+                self.overrides_for(request.url)  # type: ignore[assignment]
+            )
             while cls in overrides:
                 cls = overrides[cls]
             return cls
@@ -562,7 +561,6 @@ else:
 
 
 class FatalErrorHandler:
-
     def __init__(self, crawler):
         self.crawler = crawler
 
@@ -592,7 +590,6 @@ session_config = session_config_registry.session_config
 
 
 class _SessionManager:
-
     def __init__(self, crawler: Crawler):
         self._crawler = crawler
 
@@ -603,6 +600,11 @@ class _SessionManager:
         pool_sizes = settings.getdict("ZYTE_API_SESSION_POOL_SIZES", {})
         for pool, size in pool_sizes.items():
             self._pending_initial_sessions[pool] = size
+
+        self._max_check_failures = settings.getint(
+            "ZYTE_API_SESSION_MAX_CHECK_FAILURES", 1
+        )
+        self._check_failures: Dict[str, int] = defaultdict(int)
 
         self._max_errors = settings.getint("ZYTE_API_SESSION_MAX_ERRORS", 1)
         self._errors: Dict[str, int] = defaultdict(int)
@@ -685,7 +687,7 @@ class _SessionManager:
             self._session_config_cache[request] = self._session_config_map[cls]
             return self._session_config_map[cls]
 
-    def _get_pool(self, request):
+    def get_pool(self, request):
         try:
             return self._pool_cache[request]
         except KeyError:
@@ -823,7 +825,7 @@ class _SessionManager:
         *request* is needed to determine the URL to use for request
         initialization.
         """
-        pool = self._get_pool(request)
+        pool = self.get_pool(request)
         if self._pending_initial_sessions[pool] >= 1:
             self._pending_initial_sessions[pool] -= 1
             session_id = await self._create_session(request, pool)
@@ -882,7 +884,7 @@ class _SessionManager:
             session_config = self._get_session_config(request)
             if not session_config.enabled(request):
                 return True
-            pool = self._get_pool(request)
+            pool = self.get_pool(request)
             try:
                 passed = session_config.check(response, request)
             except CloseSpider:
@@ -902,6 +904,11 @@ class _SessionManager:
                 )
                 if passed:
                     return True
+                session_id = get_request_session_id(request)
+                if session_id is not None:
+                    self._check_failures[session_id] += 1
+                    if self._check_failures[session_id] < self._max_check_failures:
+                        return False
             self._start_request_session_refresh(request, pool)
         return False
 
@@ -959,7 +966,7 @@ class _SessionManager:
     def handle_error(self, request: Request):
         assert self._crawler.stats
         with self._fatal_error_handler:
-            pool = self._get_pool(request)
+            pool = self.get_pool(request)
             self._crawler.stats.inc_value(
                 f"scrapy-zyte-api/sessions/pools/{pool}/use/failed"
             )
@@ -973,7 +980,7 @@ class _SessionManager:
     def handle_expiration(self, request: Request):
         assert self._crawler.stats
         with self._fatal_error_handler:
-            pool = self._get_pool(request)
+            pool = self.get_pool(request)
             self._crawler.stats.inc_value(
                 f"scrapy-zyte-api/sessions/pools/{pool}/use/expired"
             )
@@ -981,7 +988,6 @@ class _SessionManager:
 
 
 class ScrapyZyteAPISessionDownloaderMiddleware:
-
     @classmethod
     def from_crawler(cls, crawler: Crawler):
         return cls(crawler)
@@ -1040,6 +1046,13 @@ class ScrapyZyteAPISessionDownloaderMiddleware:
             request,
             spider=spider,
             reason=reason,
+        )
+
+    def get_pool(self, request: Request):
+        return (
+            self._sessions.get_pool(request)
+            if self._sessions.is_enabled(request)
+            else None
         )
 
 
