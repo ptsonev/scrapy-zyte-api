@@ -1,7 +1,7 @@
 Changes
 =======
 
-0.33.1 (unreleased)
+0.33.1 (2026-04-07)
 -------------------
 
 -   Made the documentation more LLM-friendly, with markdown versions of every
