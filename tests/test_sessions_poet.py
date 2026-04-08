@@ -39,9 +39,9 @@ async def test_provider(mockserver):
                 yield request
 
         def start_requests(self):
-            yield Request("https://example.com", callback=self.parse)
+            yield Request("https://example.com", callback=self.parse)  # type: ignore[arg-type]
 
-        def parse(self, response: DummyResponse, product: Product):
+        def parse(self, response: DummyResponse, product: Product):  # type: ignore[override]
             pass
 
     crawler = await get_crawler(settings, spider_cls=TestSpider, setup_engine=False)

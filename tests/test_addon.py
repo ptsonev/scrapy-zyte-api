@@ -28,7 +28,7 @@ try:
     from scrapy_poet import InjectionMiddleware
 except ImportError:
     POET = False
-    InjectionMiddleware = None
+    InjectionMiddleware = None  # type: ignore[assignment,misc]
     ZyteApiProvider: type | None = None
 else:
     POET = True

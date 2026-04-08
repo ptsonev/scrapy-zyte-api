@@ -107,7 +107,7 @@ class ZyteAPISpider(Spider):
     url: str
 
     def get_start_request(self):
-        return Request(self.url, callback=self.parse_)
+        return Request(self.url, callback=self.parse_)  # type: ignore[arg-type]
 
     async def start(self):
         yield self.get_start_request()
@@ -128,7 +128,9 @@ class ZyteAPIProviderMetaSpider(ZyteAPISpider):
 
     def get_start_request(self):
         return Request(
-            self.url, callback=self.parse_, meta={"zyte_api_provider": PROVIDER_PARAMS}
+            self.url,
+            callback=self.parse_,  # type: ignore[arg-type]
+            meta={"zyte_api_provider": PROVIDER_PARAMS},
         )
 
     def parse_(self, response: DummyResponse, page: ProductPage):
@@ -1157,7 +1159,7 @@ async def test_auto_field_stats_no_override(mockserver):
 
         def start_requests(self):
             for url in ("data:,a", "data:,b"):
-                yield Request(url, callback=self._parse)
+                yield Request(url, callback=self._parse)  # type: ignore[arg-type]
 
         def _parse(self, response: DummyResponse, product: Product):  # type: ignore[override]
             pass
@@ -1631,7 +1633,7 @@ class ZyteAPIMultipleSpider(ZyteAPISpider):
     url: str
 
     def get_start_request(self):
-        return Request(self.url, callback=self.parse_)
+        return Request(self.url, callback=self.parse_)  # type: ignore[arg-type]
 
     def parse_(  # type: ignore[override]
         self,

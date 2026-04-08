@@ -18,7 +18,7 @@ from . import SETTINGS, get_crawler
 try:
     import scrapy_poet
 except ImportError:
-    scrapy_poet = None
+    scrapy_poet = None  # type: ignore[assignment]
 
 
 @deferred_f_from_coro_f
