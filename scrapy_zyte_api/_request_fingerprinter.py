@@ -48,6 +48,7 @@ else:
             self._fallback_fingerprinter_is_poets = poet_is_configured = (
                 self._poet_is_configured(settings)
             )
+            DefaultFallbackRequestFingerprinter: type | str
             if poet_is_configured:
                 from scrapy_poet import (  # noqa: PLC0415
                     ScrapyPoetRequestFingerprinter as DefaultFallbackRequestFingerprinter,
