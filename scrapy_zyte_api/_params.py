@@ -1,8 +1,9 @@
 from base64 import b64decode, b64encode
+from collections.abc import Iterable, Mapping
 from copy import copy
 from logging import getLogger
 from os import environ
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any
 from warnings import warn
 
 from scrapy import Request
@@ -71,7 +72,7 @@ _NoDefault = object()
 # purposes, i.e. 2 requests with a different value for that field but otherwise
 # identical should be treated as different requests, not as duplicate requests.
 #
-_REQUEST_PARAMS: Dict[str, Dict[str, Any]] = {
+_REQUEST_PARAMS: dict[str, dict[str, Any]] = {
     "url": {
         "default": _NoDefault,
     },
@@ -271,10 +272,43 @@ _DEFAULT_API_PARAMS = {
 
 ANY_VALUE = object()
 ANY_VALUE_T = Any
-SKIP_HEADER_T = Dict[bytes, Union[ANY_VALUE_T, str]]
+SKIP_HEADER_T = dict[bytes, ANY_VALUE_T | str]
+
+_BAN_SENSITIVE_HEADERS = {
+    b"accept": "Accept",
+    b"accept-encoding": "Accept-Encoding",
+    b"accept-language": "Accept-Language",
+    b"cookie": "Cookie",
+    b"user-agent": "User-Agent",
+}
+_BAN_SENSITIVE_REQUEST_HEADER_KEYS = {
+    header.replace(b"-", b"").decode(): header for header in _BAN_SENSITIVE_HEADERS
+}
 
 
-def _may_use_browser(api_params: Dict[str, Any]) -> bool:
+def _iter_ban_sensitive_headers_in_params(
+    api_params: dict[str, Any],
+) -> Iterable[bytes]:
+    seen = set()
+    for header in api_params.get("customHttpRequestHeaders") or []:
+        header_name = header.get("name")
+        if not header_name:
+            continue
+        lowercase_header: bytes | None = to_bytes(header_name).strip().lower()
+        if lowercase_header in _BAN_SENSITIVE_HEADERS and lowercase_header not in seen:
+            seen.add(lowercase_header)
+            yield lowercase_header
+
+    for key in api_params.get("requestHeaders") or {}:
+        lowercase_header = _BAN_SENSITIVE_REQUEST_HEADER_KEYS.get(key.lower())
+        if not lowercase_header:
+            continue
+        if lowercase_header in _BAN_SENSITIVE_HEADERS and lowercase_header not in seen:
+            seen.add(lowercase_header)
+            yield lowercase_header
+
+
+def _may_use_browser(api_params: dict[str, Any]) -> bool:
     """Return ``False`` if *api_params* indicate with certainty that browser
     rendering will not be used, or ``True`` otherwise."""
     for key in _BROWSER_KEYS:
@@ -285,9 +319,9 @@ def _may_use_browser(api_params: Dict[str, Any]) -> bool:
         return True
     if "httpResponseBody" in extract_froms:
         return False
-    if api_params.get("httpResponseBody", _DEFAULT_API_PARAMS["httpResponseBody"]):
-        return False
-    return True
+    return not api_params.get(
+        "httpResponseBody", _DEFAULT_API_PARAMS["httpResponseBody"]
+    )
 
 
 def session_id_to_session(session_id):
@@ -301,7 +335,7 @@ def str_to_bool(value):
 def _is_safe_header(k, v, /, *, api_params, request):
     k = k.strip()
     lowercase_k = to_bytes(k.lower())
-    if not (lowercase_k.startswith(b"zyte-") or lowercase_k.startswith(b"x-crawlera-")):
+    if not (lowercase_k.startswith((b"zyte-", b"x-crawlera-"))):
         return True
 
     decoded_k = to_unicode(k)
@@ -522,28 +556,29 @@ def _is_safe_header(k, v, /, *, api_params, request):
 
 
 def _process_manual_custom_http_request_headers(
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
 ) -> None:
-    headers = []
-    for header_dict in api_params.pop("customHttpRequestHeaders"):
+    headers = [
+        header_dict
+        for header_dict in api_params.pop("customHttpRequestHeaders")
         if _is_safe_header(
             header_dict["name"],
             header_dict["value"],
             api_params=api_params,
             request=request,
-        ):
-            headers.append(header_dict)
+        )
+    ]
     if headers:
         api_params["customHttpRequestHeaders"] = headers
 
 
 def _iter_headers(
     *,
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
     header_parameter: str,
-) -> Iterable[Tuple[bytes, bytes, bytes]]:
+) -> Iterable[tuple[bytes, bytes, bytes]]:
     headers = api_params.get(header_parameter)
     if headers not in (None, True):
         logger.warning(
@@ -566,7 +601,7 @@ def _iter_headers(
 
 def _map_custom_http_request_headers(
     *,
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
     skip_headers: SKIP_HEADER_T,
 ):
@@ -585,9 +620,9 @@ def _map_custom_http_request_headers(
 
 def _map_request_headers(
     *,
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
-    browser_headers: Dict[bytes, str],
+    browser_headers: dict[bytes, str],
     browser_ignore_headers: SKIP_HEADER_T,
 ):
     request_headers = {}
@@ -613,7 +648,7 @@ def _map_request_headers(
 
 def _warn_about_request_headers(
     *,
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
     skip_headers: SKIP_HEADER_T,
 ):
@@ -633,7 +668,7 @@ def _warn_about_request_headers(
         )
 
 
-def _get_extract_from(api_params: Dict[str, Any], extract_type: str) -> Union[str, Any]:
+def _get_extract_from(api_params: dict[str, Any], extract_type: str) -> str | Any:
     options = api_params.get(f"{extract_type}Options", {})
     default_extract_from = _REQUEST_PARAMS[extract_type].get(
         "default_extract_from", _NoDefault
@@ -641,7 +676,7 @@ def _get_extract_from(api_params: Dict[str, Any], extract_type: str) -> Union[st
     return options.get("extractFrom", default_extract_from)
 
 
-def _get_extract_froms(api_params: Dict[str, Any]) -> Set[str]:
+def _get_extract_froms(api_params: dict[str, Any]) -> set[str]:
     result = set()
     for key in _EXTRACT_KEYS:
         if not api_params.get(key, False):
@@ -652,10 +687,10 @@ def _get_extract_froms(api_params: Dict[str, Any]) -> Set[str]:
 
 def _set_request_headers_from_request(
     *,
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
     skip_headers: SKIP_HEADER_T,
-    browser_headers: Dict[bytes, str],
+    browser_headers: dict[bytes, str],
     browser_ignore_headers: SKIP_HEADER_T,
 ):
     """Updates *api_params*, in place, based on *request*."""
@@ -717,7 +752,7 @@ def proxy_mode_browser_html_enabled(request: Request) -> bool:
 
 def _set_http_response_body_from_request(
     *,
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
 ):
     if not any(
@@ -736,9 +771,9 @@ def _set_http_response_body_from_request(
 
 def _set_http_response_headers_from_request(
     *,
-    api_params: Dict[str, Any],
-    default_params: Dict[str, Any],
-    meta_params: Dict[str, Any],
+    api_params: dict[str, Any],
+    default_params: dict[str, Any],
+    meta_params: dict[str, Any],
 ):
     if api_params.get("httpResponseBody"):
         api_params.setdefault("httpResponseHeaders", True)
@@ -758,7 +793,7 @@ def _set_http_response_headers_from_request(
 
 def _set_http_response_cookies_from_request(
     *,
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
 ):
     api_params.setdefault("experimental", {})
     api_params["experimental"].setdefault("responseCookies", True)
@@ -768,9 +803,9 @@ def _set_http_response_cookies_from_request(
 
 def _set_http_request_cookies_from_request(
     *,
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
-    cookie_jars: Dict[Any, CookieJar],
+    cookie_jars: dict[Any, CookieJar],
     max_cookies: int,
 ):
     api_params.setdefault("experimental", {})
@@ -831,7 +866,7 @@ def _set_http_request_cookies_from_request(
 
 def _set_http_request_method_from_request(
     *,
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
 ):
     method = api_params.get("httpRequestMethod")
@@ -853,7 +888,7 @@ def _set_http_request_method_from_request(
 
 def _set_http_request_body_from_request(
     *,
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
 ):
     body = api_params.get("httpRequestBody")
@@ -879,8 +914,8 @@ _Undefined = object()
 
 def _unset_unneeded_api_params(
     *,
-    api_params: Dict[str, Any],
-    default_params: Dict[str, Any],
+    api_params: dict[str, Any],
+    default_params: dict[str, Any],
     request: Request,
 ):
     for param, default_value in _DEFAULT_API_PARAMS.items():
@@ -899,16 +934,16 @@ def _unset_unneeded_api_params(
 
 
 def _update_api_params_from_request(
-    api_params: Dict[str, Any],
+    api_params: dict[str, Any],
     request: Request,
     *,
-    default_params: Dict[str, Any],
-    meta_params: Dict[str, Any],
+    default_params: dict[str, Any],
+    meta_params: dict[str, Any],
     skip_headers: SKIP_HEADER_T,
-    browser_headers: Dict[bytes, str],
+    browser_headers: dict[bytes, str],
     browser_ignore_headers: SKIP_HEADER_T,
     cookies_enabled: bool,
-    cookie_jars: Optional[Dict[Any, CookieJar]],
+    cookie_jars: dict[Any, CookieJar] | None,
     max_cookies: int,
 ):
     _set_http_response_body_from_request(api_params=api_params, request=request)
@@ -944,30 +979,29 @@ def _update_api_params_from_request(
 
 
 def _copy_meta_params_as_dict(
-    meta_params: Dict[str, Any],
+    meta_params: dict[str, Any],
     *,
     param: str,
     request: Request,
 ):
     if meta_params is True:
         return {}
-    elif not isinstance(meta_params, Mapping):
+    if not isinstance(meta_params, Mapping):
         raise ValueError(
             f"'{param}' parameters in the request meta should be provided as "
             f"a dictionary, got {type(meta_params)} instead in {request}."
         )
-    else:
-        return copy(meta_params)
+    return copy(meta_params)
 
 
 def _merge_params(
     *,
-    default_params: Dict[str, Any],
-    meta_params: Dict[str, Any],
+    default_params: dict[str, Any],
+    meta_params: dict[str, Any],
     param: str,
     setting: str,
     request: Request,
-    context: Optional[List[str]] = None,
+    context: list[str] | None = None,
 ):
     params = copy(default_params)
     meta_params = copy(meta_params)
@@ -980,7 +1014,7 @@ def _merge_params(
                 param=param,
                 setting=setting,
                 request=request,
-                context=context + [k],
+                context=[*context, k],
             )
         if meta_params[k] not in (None, {}):
             continue
@@ -988,7 +1022,7 @@ def _merge_params(
         if k in params:
             params.pop(k)
         else:
-            qual_param = ".".join(context + [k])
+            qual_param = ".".join([*context, k])
             logger.warning(
                 f"In request {request} {param!r} parameter {qual_param} is "
                 f"None, which is a value reserved to unset parameters defined "
@@ -1002,7 +1036,7 @@ def _merge_params(
 def _get_raw_params(
     request: Request,
     *,
-    default_params: Dict[str, Any],
+    default_params: dict[str, Any],
 ):
     meta_params = request.meta.get("zyte_api", False)
     if meta_params is False:
@@ -1013,6 +1047,7 @@ def _get_raw_params(
             f"Setting the zyte_api request metadata key to "
             f"{meta_params!r} is deprecated. Use False instead.",
             DeprecationWarning,
+            stacklevel=1,
         )
         return None
 
@@ -1035,12 +1070,12 @@ def _get_automap_params(
     request: Request,
     *,
     default_enabled: bool,
-    default_params: Dict[str, Any],
+    default_params: dict[str, Any],
     skip_headers: SKIP_HEADER_T,
-    browser_headers: Dict[bytes, str],
+    browser_headers: dict[bytes, str],
     browser_ignore_headers: SKIP_HEADER_T,
     cookies_enabled: bool,
-    cookie_jars: Optional[Dict[Any, CookieJar]],
+    cookie_jars: dict[Any, CookieJar] | None,
     max_cookies: int,
 ):
     meta_params = request.meta.get("zyte_api_automap", default_enabled)
@@ -1080,17 +1115,17 @@ def _get_automap_params(
 def _get_api_params(
     request: Request,
     *,
-    default_params: Dict[str, Any],
+    default_params: dict[str, Any],
     transparent_mode: bool,
-    automap_params: Dict[str, Any],
+    automap_params: dict[str, Any],
     skip_headers: SKIP_HEADER_T,
-    browser_headers: Dict[bytes, str],
+    browser_headers: dict[bytes, str],
     browser_ignore_headers: SKIP_HEADER_T,
-    job_id: Optional[str],
+    job_id: str | None,
     cookies_enabled: bool,
-    cookie_jars: Optional[Dict[Any, CookieJar]],
+    cookie_jars: dict[Any, CookieJar] | None,
     max_cookies: int,
-) -> Optional[dict]:
+) -> dict | None:
     """Returns a dictionary of API parameters that must be sent to Zyte API for
     the specified request, or None if the request should not be sent through
     Zyte API."""
@@ -1182,7 +1217,7 @@ def _load_mw_skip_headers(crawler):
     return mw_skip_headers
 
 
-def _load_browser_headers(settings) -> Dict[bytes, str]:
+def _load_browser_headers(settings) -> dict[bytes, str]:
     browser_headers = settings.getdict(
         "ZYTE_API_BROWSER_HEADERS",
         {"Referer": "referer"},
@@ -1200,6 +1235,11 @@ class _ParamParser:
         self._transparent_mode = settings.getbool("ZYTE_API_TRANSPARENT_MODE", False)
         self._http_skip_headers = _load_http_skip_headers(settings)
         self._mw_skip_headers = _load_mw_skip_headers(crawler)
+        self._warn_on_ban_sensitive_headers = settings.getbool(
+            "ZYTE_API_WARN_ON_BAN_SENSITIVE_HEADERS",
+            True,
+        )
+        self._warned_ban_sensitive_headers: set[bytes] = set()
         self._warn_on_cookies = False
         if cookies_enabled is not None:
             self._cookies_enabled = cookies_enabled
@@ -1214,14 +1254,12 @@ class _ParamParser:
             self._cookies_enabled = False
             self._warn_on_cookies = settings.getbool("COOKIES_ENABLED")
         self._max_cookies = settings.getint("ZYTE_API_MAX_COOKIES", 100)
-        self._crawler = crawler
         self._cookie_jars = None
 
     def _request_skip_headers(self, request):
         result = dict(self._mw_skip_headers)
         for name in request.meta.get("_pre_mw_headers", set()):
-            if name in result:
-                del result[name]
+            result.pop(name, None)
         return result
 
     def parse(self, request):
@@ -1242,9 +1280,31 @@ class _ParamParser:
             cookie_jars=self._cookie_jars,
             max_cookies=self._max_cookies,
         )
+        if params and self._warn_on_ban_sensitive_headers:
+            self._warn_about_ban_sensitive_headers(request, params)
         if not dont_merge_cookies and self._warn_on_cookies:
             self._handle_warn_on_cookies(request, params)
         return params
+
+    def _warn_about_ban_sensitive_headers(
+        self,
+        request: Request,
+        params: dict[str, Any],
+    ) -> None:
+        for lowercase_header in _iter_ban_sensitive_headers_in_params(params):
+            if lowercase_header in self._warned_ban_sensitive_headers:
+                continue
+            self._warned_ban_sensitive_headers.add(lowercase_header)
+            display_name = _BAN_SENSITIVE_HEADERS[lowercase_header]
+            logger.warning(
+                f"Request {request} sends ban-sensitive header {display_name} "
+                f"to Zyte API. User-defined values can negatively impact ban "
+                "avoidance effectiveness. If unintended, remove it where it "
+                "is defined (for example in Request.headers, USER_AGENT, or "
+                "DEFAULT_REQUEST_HEADERS). If intentional, set "
+                "ZYTE_API_WARN_ON_BAN_SENSITIVE_HEADERS to False to silence "
+                "this warning.",
+            )
 
     def _handle_warn_on_cookies(self, request, params):
         if params and params.get("experimental", {}).get("requestCookies") is not None:

@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from os import environ
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib.request import Request
 
 from packaging.version import Version
@@ -16,16 +16,18 @@ from zyte_api import AsyncZyteAPI
 from scrapy_zyte_api.addon import Addon
 from scrapy_zyte_api.handler import _ScrapyZyteAPIBaseDownloadHandler
 from scrapy_zyte_api.utils import (  # type: ignore[attr-defined]
+    _DOWNLOAD_REQUEST_RETURNS_DEFERRED,
     _POET_ADDON_SUPPORT,
     _ensure_awaitable,
     maybe_deferred_to_future,
-    _DOWNLOAD_REQUEST_RETURNS_DEFERRED,
 )
 
 _API_KEY = "a"
 
+UNSET = object()
 DEFAULT_CLIENT_CONCURRENCY = AsyncZyteAPI(api_key=_API_KEY).n_conn
-SETTINGS_T = Dict[str, Any]
+
+SETTINGS_T = dict[str, Any]
 SETTINGS: SETTINGS_T = {
     "DOWNLOAD_HANDLERS": {
         "http": "scrapy_zyte_api.handler.ScrapyZyteAPIDownloadHandler",
@@ -70,7 +72,13 @@ SETTINGS_ADDON: SETTINGS_T = {
     "TELNETCONSOLE_ENABLED": False,
     "ZYTE_API_KEY": _API_KEY,
 }
-UNSET = object()
+
+SESSION_SETTINGS: SETTINGS_T = {
+    "ZYTE_API_SESSION_DELAY": 0,
+    "ZYTE_API_SESSION_ENABLED": True,
+    "ZYTE_API_SESSION_QUEUE_WAIT_TIME": 0,
+    "ZYTE_API_SESSION_STATS_PER_POOL": True,
+}
 
 
 class DummySpider(Spider):
@@ -78,7 +86,12 @@ class DummySpider(Spider):
 
 
 async def get_crawler(
-    settings=None, spider_cls=DummySpider, setup_engine=True, use_addon=False, poet=True
+    settings=None,
+    spider_cls=DummySpider,
+    setup_engine=True,
+    start_handler=False,
+    use_addon=False,
+    poet=True,
 ):
     settings = settings or {}
     base_settings: SETTINGS_T = deepcopy(SETTINGS if not use_addon else SETTINGS_ADDON)
@@ -87,7 +100,7 @@ async def get_crawler(
         final_settings.setdefault("ADDONS", {})["scrapy_poet.Addon"] = 300
     crawler = _get_crawler(settings_dict=final_settings, spidercls=spider_cls)
     if setup_engine:
-        await setup_crawler_engine(crawler)
+        await setup_crawler_engine(crawler, start_handler=start_handler)
     return crawler
 
 
@@ -105,11 +118,13 @@ def get_download_handler(crawler, schema):
 
 @asynccontextmanager
 async def make_handler(
-    settings: SETTINGS_T, api_url: Optional[str] = None, *, use_addon: bool = False
+    settings: SETTINGS_T, api_url: str | None = None, *, use_addon: bool = False
 ):
     if api_url is not None:
         settings["ZYTE_API_URL"] = api_url
-    crawler = await get_crawler(settings, use_addon=use_addon)
+    crawler = await get_crawler(
+        settings, setup_engine=True, start_handler=True, use_addon=use_addon
+    )
     handler = get_download_handler(crawler, "https")
     if not isinstance(handler, _ScrapyZyteAPIBaseDownloadHandler):
         # i.e. ZYTE_API_ENABLED=False
@@ -118,7 +133,7 @@ async def make_handler(
         yield handler
     finally:
         if handler is not None:
-            await handler._close()  # NOQA
+            await handler._close()
 
 
 def serialize_settings(settings):
@@ -156,7 +171,7 @@ def set_env(**env_vars):
         environ.update(old_environ)
 
 
-async def setup_crawler_engine(crawler: Crawler):
+async def setup_crawler_engine(crawler: Crawler, start_handler: bool = False) -> None:
     """Run the crawl steps until engine setup, so that crawler.engine is not
     None.
 
@@ -167,9 +182,10 @@ async def setup_crawler_engine(crawler: Crawler):
     crawler.spider = crawler._create_spider()
     crawler.engine = crawler._create_engine()
 
-    handler = get_download_handler(crawler, "https")
-    if hasattr(handler, "engine_started"):
-        await handler.engine_started()
+    if start_handler:
+        handler = get_download_handler(crawler, "https")
+        if hasattr(handler, "engine_started"):
+            await handler.engine_started()
 
 
 async def download_request(handler, request) -> Response:
@@ -194,3 +210,11 @@ async def process_response(middleware, request, response) -> Request | None:
     else:
         maybe_awaitable = middleware.process_response(request, response, spider=None)
     await _ensure_awaitable(maybe_awaitable)
+
+
+def get_session_stats(crawler):
+    return {
+        k: v
+        for k, v in crawler.stats.get_stats().items()
+        if k.startswith("scrapy-zyte-api/sessions")
+    }

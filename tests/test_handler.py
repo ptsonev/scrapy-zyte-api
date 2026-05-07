@@ -9,11 +9,11 @@ from typing import Any
 from unittest import mock
 
 import pytest
-from scrapy.utils.defer import deferred_f_from_coro_f
 from scrapy import Request, Spider
 from scrapy.core.downloader.handlers.http11 import HTTP11DownloadHandler
 from scrapy.exceptions import NotConfigured
 from scrapy.settings import Settings
+from scrapy.utils.defer import deferred_f_from_coro_f
 from scrapy.utils.test import get_crawler
 from zyte_api import RetryFactory
 from zyte_api.constants import API_URL
@@ -27,14 +27,22 @@ from scrapy_zyte_api.utils import (  # type: ignore[attr-defined]
     _AUTOTHROTTLE_DONT_ADJUST_DELAY_SUPPORT,
     _POET_ADDON_SUPPORT,
     _X402_SUPPORT,
-    _build_from_crawler,
     USER_AGENT,
+    _build_from_crawler,
     maybe_deferred_to_future,
 )
 
-from . import DEFAULT_CLIENT_CONCURRENCY, SETTINGS, SETTINGS_T, UNSET
+from . import (
+    DEFAULT_CLIENT_CONCURRENCY,
+    SETTINGS,
+    SETTINGS_T,
+    UNSET,
+    download_request,
+    get_download_handler,
+    make_handler,
+    set_env,
+)
 from . import get_crawler as get_crawler_zyte_api
-from . import get_download_handler, make_handler, set_env, download_request
 from .mockserver import MockServer
 
 try:
@@ -45,11 +53,11 @@ except ImportError:
 
 @pytest.mark.parametrize(
     "concurrency",
-    (
+    [
         1,
         DEFAULT_CLIENT_CONCURRENCY,
         DEFAULT_CLIENT_CONCURRENCY + 1,
-    ),
+    ],
 )
 @deferred_f_from_coro_f
 async def test_concurrency_configuration(concurrency):
@@ -57,10 +65,11 @@ async def test_concurrency_configuration(concurrency):
         **SETTINGS,
         "CONCURRENT_REQUESTS": concurrency,
     }
-    crawler = await get_crawler_zyte_api(settings=settings)
+    crawler = await get_crawler_zyte_api(settings=settings, start_handler=True)
     handler = get_download_handler(crawler, "https")
     assert handler._client.n_conn == concurrency
     assert handler._session._session.connector.limit == concurrency
+    await handler._close()
 
 
 ETH_KEY = "c85ef7d79691fe79573b1a7064c5232332f53bb1b44a08f1a737f57a68a4706e"
@@ -71,7 +80,7 @@ HAS_X402 = importlib.util.find_spec("x402") is not None and _X402_SUPPORT
 
 @pytest.mark.parametrize(
     ("scenario", "expected"),
-    (
+    [
         (
             {},
             NotConfigured,
@@ -150,7 +159,7 @@ HAS_X402 = importlib.util.find_spec("x402") is not None and _X402_SUPPORT
             if _X402_SUPPORT
             else NotConfigured,
         ),
-    ),
+    ],
 )
 def test_auth(scenario: dict[str, Any], expected: type[Exception] | dict[str, str]):
     env = scenario.get("env", {})
@@ -183,8 +192,8 @@ def test_auth(scenario: dict[str, Any], expected: type[Exception] | dict[str, st
 
 
 @pytest.mark.parametrize(
-    "setting,expected",
-    (
+    ("setting", "expected"),
+    [
         (
             UNSET,
             API_URL,
@@ -205,7 +214,7 @@ def test_auth(scenario: dict[str, Any], expected: type[Exception] | dict[str, st
             "https://api.example.com",
             "https://api.example.com",
         ),
-    ),
+    ],
 )
 def test_api_url(setting, expected):
     settings: SETTINGS_T = {"ZYTE_API_KEY": "a"}
@@ -231,7 +240,7 @@ assert RETRY_POLICY_A != RETRY_POLICY_B
 
 @deferred_f_from_coro_f
 @pytest.mark.parametrize(
-    "settings,meta,expected",
+    ("settings", "meta", "expected"),
     [
         ({}, {}, None),
         (
@@ -266,6 +275,7 @@ async def test_retry_policy(
     async with make_handler(settings) as handler:
         req = Request("https://example.com", meta=meta)
         unmocked_session = handler._session
+        await unmocked_session.close()
         handler._session = mock.AsyncMock(unmocked_session)
         handler._session.get.return_value = {
             "browserHtml": "",
@@ -285,7 +295,7 @@ async def test_retry_policy(
 
 @pytest.mark.parametrize(
     ("settings", "meta", "is_set"),
-    (
+    [
         ({}, {"zyte_api": {"foo": "bar"}}, True),
         (
             {},
@@ -328,7 +338,7 @@ async def test_retry_policy(
             {"autothrottle_dont_adjust_delay": False},
             True,
         ),
-    ),
+    ],
 )
 @deferred_f_from_coro_f
 async def test_download_latency(settings, meta, is_set, mockserver):
@@ -434,7 +444,7 @@ def test_single_client():
 
 @deferred_f_from_coro_f
 @pytest.mark.parametrize(
-    "settings,enabled",
+    ("settings", "enabled"),
     [
         ({}, False),
         ({"ZYTE_API_LOG_REQUESTS": False}, False),
@@ -459,7 +469,7 @@ async def test_log_request_toggle(
 
 @deferred_f_from_coro_f
 @pytest.mark.parametrize(
-    "settings,short_str,long_str,truncated_str",
+    ("settings", "short_str", "long_str", "truncated_str"),
     [
         ({}, "a" * 64, "a" * 65, "a" * 63 + "..."),
         ({"ZYTE_API_LOG_REQUESTS_TRUNCATE": 0}, "a" * 64, "a" * 65, "a" * 65),
@@ -520,6 +530,7 @@ async def test_log_request_truncate(
         meta = {"zyte_api": input_params}
         request = Request("https://example.com", meta=meta)
         unmocked_session = handler._session
+        await unmocked_session.close()
         handler._session = mock.AsyncMock(unmocked_session)
         handler._session.get.return_value = {
             "browserHtml": "",
@@ -551,7 +562,9 @@ def test_log_request_truncate_negative(enabled):
         "ZYTE_API_LOG_REQUESTS_TRUNCATE": -1,
     }
     crawler = get_crawler(settings_dict=settings)
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError, match=r"ZYTE_API_LOG_REQUESTS_TRUNCATE setting \(-1\) is invalid"
+    ):
         _build_from_crawler(ScrapyZyteAPIDownloadHandler, crawler)
 
 
@@ -565,14 +578,15 @@ async def test_trust_env(enabled):
         settings["ZYTE_API_USE_ENV_PROXY"] = enabled
     else:
         enabled = False
-    crawler = await get_crawler_zyte_api(settings=settings)
+    crawler = await get_crawler_zyte_api(settings=settings, start_handler=True)
     handler = get_download_handler(crawler, "https")
     assert handler._session._session._trust_env == enabled
+    await handler._close()
 
 
 @pytest.mark.parametrize(
-    "user_agent,expected",
-    (
+    ("user_agent", "expected"),
+    [
         (
             None,
             USER_AGENT,
@@ -581,7 +595,7 @@ async def test_trust_env(enabled):
             "zyte-crawlers/0.0.1",
             "zyte-crawlers/0.0.1",
         ),
-    ),
+    ],
 )
 def test_user_agent_for_build_client(user_agent, expected):
     settings: Settings = Settings(
@@ -680,7 +694,7 @@ async def test_fallback_setting():
 
 
 @pytest.mark.parametrize(
-    "body_size, warnsize, maxsize, expected_result, expected_warnings",
+    ("body_size", "warnsize", "maxsize", "expected_result", "expected_warnings"),
     [
         # Warning only (exceeds warnsize but not maxsize)
         (
@@ -722,7 +736,7 @@ def test_body_max_size_exceeded(
 
     if expected_warnings:
         for call, expected_warning in zip(
-            logger.warning.call_args_list, expected_warnings
+            logger.warning.call_args_list, expected_warnings, strict=True
         ):
             assert call[0][0] == expected_warning
     else:
@@ -731,7 +745,7 @@ def test_body_max_size_exceeded(
 
 @deferred_f_from_coro_f
 @pytest.mark.parametrize(
-    "body_size, warnsize, maxsize, expect_null",
+    ("body_size", "warnsize", "maxsize", "expect_null"),
     [
         (500, None, None, False),  # No limits, should return response
         (
@@ -755,23 +769,26 @@ async def test_download_request_limits(
 ):
     settings: SETTINGS_T = {"DOWNLOAD_WARNSIZE": warnsize, "DOWNLOAD_MAXSIZE": maxsize}
     async with make_handler(settings, mockserver.urljoin("/")) as handler:
+        await handler._session.close()
         handler._session = mock.AsyncMock()
         handler._session.get.return_value = mock.Mock(body=b"x" * body_size)
 
         mock_api_response = mock.Mock(body=b"x" * body_size)
 
         # Patch the `from_api_response` method of ZyteAPITextResponse only for the test
-        with mock.patch.object(
-            ZyteAPITextResponse, "from_api_response", return_value=mock_api_response
-        ):
-            with mock.patch(
+        with (
+            mock.patch.object(
+                ZyteAPITextResponse, "from_api_response", return_value=mock_api_response
+            ),
+            mock.patch(
                 "scrapy_zyte_api.responses._process_response",
                 return_value=mock_api_response,
-            ):
-                request = Request("https://example.com")
-                result = await handler._download_request({}, request)
+            ),
+        ):
+            request = Request("https://example.com")
+            result = await handler._download_request({}, request)
 
-                if expect_null:
-                    assert result is None
-                else:
-                    assert result is not None
+            if expect_null:
+                assert result is None
+            else:
+                assert result is not None

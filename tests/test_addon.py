@@ -1,12 +1,9 @@
-from typing import Optional, Type
-
 import pytest
-
 from scrapy import Request, Spider
-from scrapy.utils.defer import deferred_f_from_coro_f
 from scrapy.core.downloader.handlers.http11 import HTTP11DownloadHandler
 from scrapy.http.response import Response
 from scrapy.settings.default_settings import TWISTED_REACTOR
+from scrapy.utils.defer import deferred_f_from_coro_f
 from scrapy.utils.test import get_crawler
 from twisted.internet.defer import Deferred, succeed
 
@@ -22,8 +19,8 @@ from scrapy_zyte_api.utils import (
     _POET_ADDON_SUPPORT,
 )
 
+from . import download_request, get_download_handler, make_handler, serialize_settings
 from . import get_crawler as get_crawler_zyte_api
-from . import get_download_handler, make_handler, serialize_settings, download_request
 
 pytest.importorskip("scrapy.addons")
 
@@ -31,8 +28,8 @@ try:
     from scrapy_poet import InjectionMiddleware
 except ImportError:
     POET = False
-    InjectionMiddleware = None
-    ZyteApiProvider: Optional[Type] = None
+    InjectionMiddleware = None  # type: ignore[assignment,misc]
+    ZyteApiProvider: type | None = None
 else:
     POET = True
     from scrapy_zyte_api.providers import ZyteApiProvider
@@ -200,7 +197,7 @@ if TWISTED_REACTOR != "twisted.internet.asyncioreactor.AsyncioSelectorReactor":
 )
 @pytest.mark.parametrize(
     ("initial_settings", "expected_settings"),
-    (
+    [
         (
             {},
             BASE_EXPECTED,
@@ -248,7 +245,7 @@ if TWISTED_REACTOR != "twisted.internet.asyncioreactor.AsyncioSelectorReactor":
                 },
             },
         ),
-    ),
+    ],
 )
 def test_no_poet_setting_changes(initial_settings, expected_settings):
     _test_setting_changes(initial_settings, expected_settings)
@@ -267,7 +264,7 @@ if not _POET_ADDON_SUPPORT:
 )
 @pytest.mark.parametrize(
     ("initial_settings", "expected_settings"),
-    (
+    [
         (
             {},
             {
@@ -278,7 +275,60 @@ if not _POET_ADDON_SUPPORT:
                 },
             },
         ),
-    ),
+    ],
 )
 def test_poet_setting_changes(initial_settings, expected_settings):
     _test_setting_changes(initial_settings, expected_settings)
+
+
+@pytest.mark.parametrize(
+    ("manual_settings", "addon_settings"),
+    [
+        (
+            {"ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY"},
+            {},
+        ),
+        (
+            {"ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY"},
+            {"ZYTE_API_RETRY_POLICY": "zyte_api.zyte_api_retrying"},
+        ),
+        (
+            {
+                "ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_AGGRESSIVE_RETRY_POLICY"
+            },
+            {"ZYTE_API_RETRY_POLICY": "zyte_api.aggressive_retrying"},
+        ),
+        (
+            {"ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY"},
+            {"ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY"},
+        ),
+        (
+            {
+                "ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_AGGRESSIVE_RETRY_POLICY"
+            },
+            {
+                "ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_AGGRESSIVE_RETRY_POLICY"
+            },
+        ),
+        (
+            {"ZYTE_API_RETRY_POLICY": "tests.UNSET"},
+            {"ZYTE_API_RETRY_POLICY": "tests.UNSET"},
+        ),
+    ],
+)
+@deferred_f_from_coro_f
+async def test_sessions(manual_settings, addon_settings):
+    crawler = await get_crawler_zyte_api(
+        {
+            "ZYTE_API_TRANSPARENT_MODE": True,
+            "ZYTE_API_SESSION_ENABLED": True,
+            **manual_settings,
+        },
+        poet=False,
+    )
+    addon_crawler = await get_crawler_zyte_api(
+        {"ZYTE_API_SESSION_ENABLED": True, **addon_settings}, use_addon=True, poet=False
+    )
+    assert serialize_settings(crawler.settings) == serialize_settings(
+        addon_crawler.settings
+    )
