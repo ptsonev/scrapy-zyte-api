@@ -2,19 +2,12 @@ from copy import deepcopy
 
 import pytest
 from scrapy import Spider, signals
-from scrapy.utils.defer import deferred_f_from_coro_f
 from scrapy.utils.test import get_crawler
 
-from scrapy_zyte_api.utils import _POET_ADDON_SUPPORT, maybe_deferred_to_future
+from scrapy_zyte_api.utils import maybe_deferred_to_future
 
-try:
-    import scrapy.addons  # noqa: F401
-except ImportError:
-    ADDON_SUPPORT = False
-    from . import SETTINGS
-else:
-    ADDON_SUPPORT = True
-    from . import SETTINGS_ADDON as SETTINGS
+from . import _POET_INSTALLED, deferred_f_from_coro_f
+from . import SETTINGS_ADDON as SETTINGS
 
 
 @pytest.mark.parametrize(
@@ -25,7 +18,7 @@ else:
         ({}, {}, {}, True),
         (SETTINGS, {"zyte_api_automap": False}, {}, True),
         (SETTINGS, {"zyte_api_automap": True}, {}, False),
-        (SETTINGS, {}, {}, not ADDON_SUPPORT),
+        (SETTINGS, {}, {}, False),
         (
             SETTINGS,
             {"zyte_api": {"httpResponseBody": True, "httpResponseHeaders": True}},
@@ -121,7 +114,7 @@ else:
             {**SETTINGS, "DEFAULT_REQUEST_HEADERS": {"Referer": "https://example.com"}},
             {},
             {},
-            "https://example.com" if ADDON_SUPPORT else True,
+            "https://example.com",
         ),
         (
             {**SETTINGS, "DEFAULT_REQUEST_HEADERS": {"Referer": "https://example.com"}},
@@ -167,7 +160,7 @@ else:
             },
             {},
             {},
-            "https://example.com" if ADDON_SUPPORT else True,
+            "https://example.com",
         ),
         (
             SETTINGS,
@@ -199,7 +192,7 @@ else:
             },
             {},
             {},
-            "https://example.com" if ADDON_SUPPORT else True,
+            "https://example.com",
         ),
         (
             SETTINGS,
@@ -268,7 +261,7 @@ async def test_main(settings, meta, headers, expected, mockserver):
     items = []
     settings = deepcopy(settings)
     settings["ZYTE_API_URL"] = mockserver.urljoin("/")
-    if _POET_ADDON_SUPPORT:
+    if _POET_INSTALLED:
         settings.setdefault("ADDONS", {})["scrapy_poet.Addon"] = 300
     start_url = mockserver.urljoin("/a")
     follow_up_url = mockserver.urljoin("/b")

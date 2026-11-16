@@ -13,9 +13,9 @@ ZYTE_API_AUTO_FIELD_STATS
 
 Default: ``False``
 
-Enables stats that indicate which requested fields :ref:`obtained through
-scrapy-poet integration <scrapy-poet>` come directly from
-:ref:`zapi-extract`.
+Enables :stat:`scrapy-zyte-api/auto_fields/{cls}` stats, which indicate which
+requested fields :ref:`obtained through scrapy-poet integration <scrapy-poet>`
+come directly from :ref:`zapi-extract`.
 
 If for any request no page object class is used to override
 :ref:`zapi-extract` fields for a given item type, the following stat is
@@ -151,9 +151,12 @@ See :ref:`request-automatic`.
 ZYTE_API_FALLBACK_HTTP_HANDLER
 ==============================
 
-Default: :setting:`DOWNLOAD_HANDLERS["http"] <scrapy:DOWNLOAD_HANDLERS>`
+Default: :setting:`DOWNLOAD_HANDLERS_BASE["http"] <scrapy:DOWNLOAD_HANDLERS_BASE>`
 
 Download handler to use for HTTP requests that do not go through Zyte API.
+
+If you set :setting:`DOWNLOAD_HANDLERS["http"] <scrapy:DOWNLOAD_HANDLERS>`, the
+:ref:`add-on <config-addon>` uses it as the default of this setting.
 
 
 .. setting:: ZYTE_API_FALLBACK_HTTPS_HANDLER
@@ -161,9 +164,12 @@ Download handler to use for HTTP requests that do not go through Zyte API.
 ZYTE_API_FALLBACK_HTTPS_HANDLER
 ===============================
 
-Default: :setting:`DOWNLOAD_HANDLERS["https"] <scrapy:DOWNLOAD_HANDLERS>`
+Default: :setting:`DOWNLOAD_HANDLERS_BASE["https"] <scrapy:DOWNLOAD_HANDLERS_BASE>`
 
 Download handler to use for HTTPS requests that do not go through Zyte API.
+
+If you set :setting:`DOWNLOAD_HANDLERS["https"] <scrapy:DOWNLOAD_HANDLERS>`,
+the :ref:`add-on <config-addon>` uses it as the default of this setting.
 
 
 .. setting:: ZYTE_API_FALLBACK_REQUEST_FINGERPRINTER_CLASS
@@ -224,6 +230,67 @@ Determines the maximum length of any string value in the JSON object logged
 when :setting:`ZYTE_API_LOG_REQUESTS` is enabled, excluding object keys.
 
 To disable truncation, set this to ``0``.
+
+.. setting:: ZYTE_API_MAX_COOKIE_BYTES
+
+ZYTE_API_MAX_COOKIE_BYTES
+=========================
+
+Default: ``4097``
+
+During :ref:`request mapping <request>`, cookies whose serialized size exceeds
+this limit are dropped and a warning is logged. The serialized size is
+calculated as:
+
+.. code-block:: text
+
+    len(name) + 1 + len(value) + 9 + len(domain) [+ 7 + len(path)]
+
+which corresponds to the ``name=value; Domain=domain[; Path=path]``
+representation used by Zyte API.
+
+To silence this warning, set :http:`request:experimental.requestCookies`
+manually, e.g. to an empty :class:`dict`.
+
+Alternatively, if :http:`request:experimental.requestCookies` starts supporting
+larger cookies, update this setting accordingly.
+
+See also :setting:`ZYTE_API_MAX_COOKIE_NAME_LENGTH` and
+:setting:`ZYTE_API_MAX_COOKIE_VALUE_LENGTH`.
+
+
+.. setting:: ZYTE_API_MAX_COOKIE_NAME_LENGTH
+
+ZYTE_API_MAX_COOKIE_NAME_LENGTH
+===============================
+
+Default: ``4085``
+
+During :ref:`request mapping <request>`, cookies whose ``name`` length exceeds
+this limit are dropped and a warning is logged.
+
+To silence this warning, set :http:`request:experimental.requestCookies`
+manually, e.g. to an empty :class:`dict`.
+
+Alternatively, if :http:`request:experimental.requestCookies` starts supporting
+longer cookie names, update this setting accordingly.
+
+
+.. setting:: ZYTE_API_MAX_COOKIE_VALUE_LENGTH
+
+ZYTE_API_MAX_COOKIE_VALUE_LENGTH
+================================
+
+Default: ``4085``
+
+During :ref:`request mapping <request>`, cookies whose ``value`` length exceeds
+this limit are dropped and a warning is logged.
+
+To silence this warning, set :http:`request:experimental.requestCookies`
+manually, e.g. to an empty :class:`dict`.
+
+Alternatively, if :http:`request:experimental.requestCookies` starts supporting
+longer cookie values, update this setting accordingly.
 
 
 .. setting:: ZYTE_API_MAX_COOKIES
@@ -406,6 +473,44 @@ object, for example to read settings:
 
     ZYTE_API_SESSION_CHECKER = MySessionChecker
 
+.. setting:: ZYTE_API_SESSION_COOKIE_MODE
+
+ZYTE_API_SESSION_COOKIE_MODE
+============================
+
+Default: ``False``
+
+If :ref:`plugin-managed sessions <session>` are :ref:`enabled
+<enable-sessions>` for a request, this determines whether to use :ref:`cookie
+sessions <cookie-sessions>` (``True``) or Zyte API user-managed sessions
+(``False``).
+
+In cookie mode, the plugin does not use :ref:`Zyte API user-managed sessions
+<zapi-session-id>`, and instead captures the cookies from the session
+initialization response and injects them as :http:`request:requestCookies` into
+subsequent requests.
+
+Can be overriden on specific requests with
+:reqmeta:`zyte_api_session_cookie_mode`. You can also override
+:meth:`~scrapy_zyte_api.SessionConfig.cookie_mode` in a :ref:`session config
+override <session-configs>` to support more complex use cases.
+
+.. setting:: ZYTE_API_SESSION_CREATION_RETRY_DELAY
+
+ZYTE_API_SESSION_CREATION_RETRY_DELAY
+=====================================
+
+Default: ``60.0``
+
+Number of seconds to wait before retrying :ref:`session <session>`
+initialization after a server-side failure: either the active session limit
+being reached (``/problem/over-session-limit``) or a session creation error
+(``/problem/session-creation-error``).
+
+Unlike failures counted by :setting:`ZYTE_API_SESSION_MAX_BAD_INITS`, these
+errors do not indicate a problem with the session parameters; they are
+transient server-side conditions. Retrying immediately after such a failure
+is unlikely to succeed, so scrapy-zyte-api waits this many seconds first.
 
 .. setting:: ZYTE_API_SESSION_DELAY
 
@@ -426,7 +531,18 @@ Increasing this number can reduce the number of ban-related session
 expirations, hence increasing the lifetime of each session. See
 :ref:`optimize-sessions`.
 
-.. seealso:: :setting:`ZYTE_API_SESSION_RANDOMIZE_DELAY`
+.. seealso:: :setting:`ZYTE_API_SESSION_DELAY_JITTER`
+
+.. setting:: ZYTE_API_SESSION_DELAY_JITTER
+
+ZYTE_API_SESSION_DELAY_JITTER
+=============================
+
+Default: :setting:`DOWNLOAD_DELAY_JITTER`
+
+Magnitude of the random variation applied to :setting:`ZYTE_API_SESSION_DELAY`
+each time it is used, e.g. ``0.5`` multiplies the delay by a random factor
+between 0.5 and 1.5, and ``0`` disables the variation.
 
 .. setting:: ZYTE_API_SESSION_ENABLED
 
@@ -437,6 +553,21 @@ Default: ``False``
 
 Enables :ref:`plugin-managed sessions <session>`.
 
+.. setting:: ZYTE_API_SESSION_INIT_ACTION_FAILURE_INVALIDATES_SESSION
+
+ZYTE_API_SESSION_INIT_ACTION_FAILURE_INVALIDATES_SESSION
+========================================================
+
+Default: ``True``
+
+When ``True``, a session is discarded if its :ref:`initialization
+<session-init>` used :http:`actions <request:actions>` and any of them has a
+``returned`` status in the response (failed and stopped execution). See
+:ref:`session-check` for details.
+
+Set to ``False`` to disable this check and rely entirely on your own
+:setting:`ZYTE_API_SESSION_CHECKER` or
+:meth:`~scrapy_zyte_api.SessionConfig.check` implementation.
 
 .. setting:: ZYTE_API_SESSION_LOCATION
 
@@ -544,6 +675,9 @@ Example:
 .. tip:: The example above is equivalent to setting
     :setting:`ZYTE_API_SESSION_LOCATION` to ``{"postalCode": "10001"}``.
 
+For session initialization requiring a chain of multiple requests, see
+:meth:`~scrapy_zyte_api.SessionConfig.init_session`.
+
 
 .. setting:: ZYTE_API_SESSION_POOL_SIZE
 
@@ -577,8 +711,7 @@ corresponding setting for that pool:
 
 -   ``"delay"`` overrides :setting:`ZYTE_API_SESSION_DELAY`.
 
--   ``"randomize_delay"`` overrides
-    :setting:`ZYTE_API_SESSION_RANDOMIZE_DELAY`.
+-   ``"jitter"`` overrides :setting:`ZYTE_API_SESSION_DELAY_JITTER`.
 
 -   ``"size"`` overrides :setting:`ZYTE_API_SESSION_POOL_SIZE`.
 
@@ -619,15 +752,43 @@ queue.
 
 See :setting:`ZYTE_API_SESSION_QUEUE_MAX_ATTEMPTS` for details.
 
-.. setting:: ZYTE_API_SESSION_RANDOMIZE_DELAY
+.. setting:: ZYTE_API_SESSION_RETRY_POLICY
 
-ZYTE_API_SESSION_RANDOMIZE_DELAY
-================================
+ZYTE_API_SESSION_RETRY_POLICY
+=============================
 
-Default: :setting:`RANDOMIZE_DOWNLOAD_DELAY`
+Default: A session-compatible version of :setting:`ZYTE_API_RETRY_POLICY`
+(see description below).
 
-If enabled, :setting:`ZYTE_API_SESSION_DELAY` is randomized each time it is
-used by multiplying it by a random factor between 0.5 and 1.5.
+Determines the retry policy for Zyte API requests that are assigned a
+:ref:`plugin-managed session <session>`.
+
+Session requests automatically get their :reqmeta:`zyte_api_retry_policy`
+request metadata key set (via :func:`~dict.setdefault`) to the value of this
+setting. This ensures that 520 and 521 responses are not retried at the Zyte
+API client level, letting the session management middleware handle them
+instead. This applies to both regular session requests and session
+initialization requests.
+
+The value must be a string with the import path of a
+:class:`tenacity.AsyncRetrying` subclass, i.e. a retry policy object. See
+:setting:`ZYTE_API_RETRY_POLICY` for details.
+
+When not set explicitly, the value is automatically derived from
+:setting:`ZYTE_API_RETRY_POLICY`: :data:`~zyte_api.zyte_api_retrying` maps to
+:data:`~scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY`,
+:data:`~zyte_api.aggressive_retrying` maps to
+:data:`~scrapy_zyte_api.SESSION_AGGRESSIVE_RETRY_POLICY`, and any other
+(custom) value is used as-is with a warning logged, since session retry
+policies must not retry 520 or 521 responses.
+
+To override the retry policy for a specific request, set
+:reqmeta:`zyte_api_retry_policy` in the request metadata before session
+assignment. The :func:`~dict.setdefault` call will not override an
+already-set value.
+
+See :ref:`enable-sessions` for details.
+
 
 .. setting:: ZYTE_API_SESSION_STATS_PER_POOL
 

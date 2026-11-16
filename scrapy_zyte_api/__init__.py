@@ -1,19 +1,18 @@
-from .utils import _NEEDS_EARLY_REACTOR
-
-if _NEEDS_EARLY_REACTOR:
-    from scrapy.utils.reactor import install_reactor
-
-    install_reactor("twisted.internet.asyncioreactor.AsyncioSelectorReactor")
-
 # Register web-poet serializers
 from . import _serialization  # noqa: F401
-from ._annotations import ExtractFrom, actions, custom_attrs
+from ._annotations import ExtractFrom, actions, custom_attrs, network_capture
 from ._middlewares import (
     ScrapyZyteAPIDownloaderMiddleware,
     ScrapyZyteAPIRefererSpiderMiddleware,
     ScrapyZyteAPISpiderMiddleware,
 )
-from ._page_inputs import Actions, Geolocation, Screenshot
+from ._page_inputs import (
+    Actions,
+    CapturedResponse,
+    Geolocation,
+    NetworkCapture,
+    Screenshot,
+)
 from ._request_fingerprinter import ScrapyZyteAPIRequestFingerprinter
 from ._session import (
     SESSION_AGGRESSIVE_RETRY_POLICY as _SESSION_AGGRESSIVE_RETRY_POLICY,
@@ -22,6 +21,7 @@ from ._session import SESSION_DEFAULT_RETRY_POLICY as _SESSION_DEFAULT_RETRY_POL
 from ._session import (
     LocationSessionConfig,
     ScrapyZyteAPISessionDownloaderMiddleware,
+    ScrapyZyteAPISessionResetterDownloaderMiddleware,
     SessionConfig,
     get_request_session_id,
     is_session_init_request,
@@ -40,9 +40,6 @@ SESSION_DEFAULT_RETRY_POLICY = _SESSION_DEFAULT_RETRY_POLICY
 #: Alternative to the :ref:`aggresive retry policy <aggressive-retry-policy>`
 #: for :ref:`session management <session>` that does not retry 520 and 521
 #: responses.
-#:
-#: .. note:: When using python-zyte-api 0.5.2 or lower, this is the same as
-#:           :data:`~scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY`.
 SESSION_AGGRESSIVE_RETRY_POLICY = _SESSION_AGGRESSIVE_RETRY_POLICY
 
 #: Instance of :class:`web_poet.rules.RulesRegistry` that holds :ref:`session
@@ -54,14 +51,17 @@ __all__ = [
     "SESSION_DEFAULT_RETRY_POLICY",
     "Actions",
     "Addon",
+    "CapturedResponse",
     "ExtractFrom",
     "Geolocation",
     "LocationSessionConfig",
+    "NetworkCapture",
     "ScrapyZyteAPIDownloadHandler",
     "ScrapyZyteAPIDownloaderMiddleware",
     "ScrapyZyteAPIRefererSpiderMiddleware",
     "ScrapyZyteAPIRequestFingerprinter",
     "ScrapyZyteAPISessionDownloaderMiddleware",
+    "ScrapyZyteAPISessionResetterDownloaderMiddleware",
     "ScrapyZyteAPISpiderMiddleware",
     "Screenshot",
     "SessionConfig",
@@ -69,6 +69,7 @@ __all__ = [
     "custom_attrs",
     "get_request_session_id",
     "is_session_init_request",
+    "network_capture",
     "session_config",
     "session_config_registry",
 ]

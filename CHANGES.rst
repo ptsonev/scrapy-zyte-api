@@ -1,6 +1,148 @@
 Changes
 =======
 
+0.37.0 (2026-11-06)
+-------------------
+
+-   Dropped support for Python 3.10, and added support for Python 3.14 and
+    3.15.
+
+-   Increased the minimum required versions of some dependencies:
+
+    -   :doc:`Scrapy <scrapy:index>`: 2.0.1 → 2.13.3
+
+    -   :doc:`scrapy-poet <scrapy-poet:index>`: 0.22.3 → 0.28.0
+
+    -   :doc:`web-poet <web-poet:index>`: 0.17.0 → 0.25.0
+
+-   Deprecated the ``ZYTE_API_SESSION_RANDOMIZE_DELAY`` setting and the
+    ``randomize_delay`` key of :setting:`ZYTE_API_SESSION_POOLS` in favor of
+    the new :setting:`ZYTE_API_SESSION_DELAY_JITTER` setting and ``jitter``
+    key, which take the magnitude of the random variation as a number, e.g.
+    ``0.5`` for the ±50% that ``randomize_delay`` enabled, or ``0`` to disable
+    it.
+
+    :setting:`ZYTE_API_SESSION_DELAY_JITTER` defaults to Scrapy’s
+    :setting:`DOWNLOAD_DELAY_JITTER`, so on Scrapy 2.19+ a custom value of that
+    setting now also applies to :setting:`ZYTE_API_SESSION_DELAY`.
+
+-   Setting :setting:`ZYTE_API_ENABLED` to ``False`` now also disables the
+    :ref:`add-on <config-addon>`, which no longer changes any setting.
+
+-   Page objects that depend on both :class:`~web_poet.AnyResponse` and
+    :class:`~scrapy_zyte_api.Screenshot` now get a browser response, instead of
+    triggering a Zyte API request that combines :http:`request:screenshot` with
+    :http:`request:httpResponseBody`, which Zyte API does not allow.
+
+-   When :class:`~web_poet.AnyResponse` is built from an HTTP response, the
+    :ref:`declarative selectors <web-poet:declarative-selectors>` of the page
+    objects being built are now extracted in a single pass shared by all of
+    them.
+
+-   Fixed the crawl hanging when the spider is closed because of
+    :ref:`plugin-managed session <session>` errors, e.g. after reaching
+    :setting:`ZYTE_API_SESSION_MAX_BAD_INITS`, while requests are waiting for a
+    session.
+
+0.36.0 (2026-08-20)
+-------------------
+
+-   Added support for running without a Twisted reactor, honoring Scrapy’s
+    :setting:`TWISTED_REACTOR_ENABLED <scrapy:TWISTED_REACTOR_ENABLED>`
+    setting (available since Scrapy 2.15).
+
+-   Fixed a bug where a request could be dropped as a duplicate when it only
+    differed from another request in the Zyte API parameters requested
+    through :class:`~scrapy_zyte_api.providers.ZyteApiProvider`, e.g. through
+    the ``zyte_api_provider`` request metadata key.
+
+-   Fixed a crash on the upcoming Scrapy 2.18 when building request headers
+    before the crawl starts.
+
+0.35.0 (2026-06-26)
+-------------------
+
+-   Added :meth:`SessionConfig.init_session()
+    <scrapy_zyte_api.SessionConfig.init_session>`, which allows initializing a
+    :ref:`plugin-managed session <session>` with a chain of multiple requests.
+
+-   Added support for :ref:`cookie sessions <cookie-sessions>`, where
+    :ref:`plugin-managed sessions <session>` are kept by managing cookies on
+    the client side instead of relying on Zyte API session IDs, allowing
+    sessions to outlive the Zyte API session time limit.
+
+    Enable them with the new :setting:`ZYTE_API_SESSION_COOKIE_MODE` setting,
+    the new :reqmeta:`zyte_api_session_cookie_mode` request metadata key, or
+    the new :meth:`SessionConfig.cookie_mode()
+    <scrapy_zyte_api.SessionConfig.cookie_mode>` method.
+
+-   Added support for :ref:`capturing network responses <network-capture>`
+    during browser rendering through page objects, with the new
+    :class:`~scrapy_zyte_api.NetworkCapture` and
+    :class:`~scrapy_zyte_api.CapturedResponse` page inputs and the new
+    :func:`~scrapy_zyte_api.network_capture` annotation.
+
+-   :ref:`Plugin-managed sessions <session>` are now kept across redirects and
+    meta refreshes instead of being treated as new requests.
+
+    This is implemented through a new downloader middleware,
+    :class:`~scrapy_zyte_api.ScrapyZyteAPISessionResetterDownloaderMiddleware`,
+    enabled by default by the :ref:`add-on <config-addon>`.
+
+-   The response class is now chosen based on the response content type:
+    :class:`~scrapy_zyte_api.responses.ZyteAPITextResponse` is now used only
+    for HTML responses, while the new
+    :class:`~scrapy_zyte_api.responses.ZyteAPIXmlResponse` and
+    :class:`~scrapy_zyte_api.responses.ZyteAPIJsonResponse` classes are used
+    for XML and JSON responses, respectively.
+
+    Previously, XML responses were parsed as HTML, which lowercases tag and
+    attribute names, so case-sensitive XPath expressions (e.g.
+    ``//Error/Code/text()``) did not work. They now do.
+
+-   Added the :setting:`ZYTE_API_SESSION_RETRY_POLICY` setting, along with the
+    :data:`~scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY` and
+    :data:`~scrapy_zyte_api.SESSION_AGGRESSIVE_RETRY_POLICY` retry policies, so
+    that errors like 520 and 521 in :ref:`session <session>` requests are
+    handled by the session management code instead of being retried by the Zyte
+    API client.
+
+-   :ref:`Session initialization <session>` now retries after a delay, set
+    through the new :setting:`ZYTE_API_SESSION_CREATION_RETRY_DELAY` setting
+    (60 seconds by default), when the server reports a transient error, such as
+    going over the session limit or a session creation error, instead of
+    counting those toward :setting:`ZYTE_API_SESSION_MAX_BAD_INITS`.
+
+-   A failed :http:`action <request:actions>` during :ref:`session
+    initialization <session>` now invalidates the session by default. Use the
+    new :setting:`ZYTE_API_SESSION_INIT_ACTION_FAILURE_INVALIDATES_SESSION`
+    setting to disable this.
+
+-   :ref:`Plugin-managed sessions <session>` now stop cleanly when the spider
+    closes: in-progress session initialization is cancelled and requests
+    waiting for a session are dropped, instead of continuing to create sessions
+    or waiting out the session reuse delay during shutdown.
+
+-   Cookies that exceed the Zyte API size limits are now dropped, with a
+    warning, instead of triggering a Zyte API error. The new
+    :setting:`ZYTE_API_MAX_COOKIE_BYTES`,
+    :setting:`ZYTE_API_MAX_COOKIE_NAME_LENGTH`, and
+    :setting:`ZYTE_API_MAX_COOKIE_VALUE_LENGTH` settings control the limits.
+
+-   A warning is now logged when the same ``sessionContext`` is used with
+    different ``sessionContextParameters`` values, which usually indicates a
+    mistake.
+
+-   Zyte API responses that change the request URL (redirects and meta
+    refreshes) are now logged at the debug level.
+
+-   Improved error reporting when :meth:`SessionConfig.params()
+    <scrapy_zyte_api.SessionConfig.params>` returns a non-dict value.
+
+-   Documentation improvements, including a new :ref:`redirect handling
+    <redirect>` page and a new :ref:`stats reference <stats>` documenting all
+    stats.
+
 0.34.0 (2026-05-14)
 -------------------
 
@@ -731,9 +873,8 @@ Changes
 0.7.1 (2023-01-25)
 ------------------
 
-* It is now possible to `log the parameters of requests sent`_.
-
-  .. _log the parameters of requests sent: https://github.com/scrapy-plugins/scrapy-zyte-api#logging-request-parameters
+* It is now possible to log the parameters of requests sent by enabling
+  :setting:`ZYTE_API_LOG_REQUESTS`.
 
 * Stats for HTTP and HTTPS traffic used to be kept separate, and only one of
   those sets of stats would be reported. This is fixed now.
@@ -771,12 +912,11 @@ When upgrading, you should set the following in your Scrapy settings:
   to allow custom fingerprinting. By default, the default Scrapy request
   fingerprinter is used for non-Zyte API requests.
 
-  For users having ``scrapy < 2.7``, check the following link to see different
-  ways on handling the duplicate request issue:
-  https://github.com/scrapy-plugins/scrapy-zyte-api#request-fingerprinting-before-scrapy-27.
+  For users having ``scrapy < 2.7``, see the documentation of this ``scrapy-zyte-api`` version for
+  different ways on handling the duplicate request issue.
 
   More information about the request fingerprinting topic can be found in
-  https://github.com/scrapy-plugins/scrapy-zyte-api#request-fingerprinting.
+  :ref:`fingerprint`.
 
 * Various improvements to docs and tests.
 

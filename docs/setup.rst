@@ -18,11 +18,9 @@ You need at least:
 -   A :ref:`Zyte API <zyte-api>` subscription (there’s a :ref:`free trial
     <zapi-trial>`).
 
--   Python 3.10+
+-   Python 3.11+
 
--   Scrapy 2.0.1+
-
-:doc:`scrapy-poet <scrapy-poet:index>` integration requires Scrapy 2.6+.
+-   Scrapy 2.13.3+
 
 
 .. _install:
@@ -61,8 +59,8 @@ Configuration
 =============
 
 To configure scrapy-zyte-api, :ref:`set up authentication <auth>` and either
-:ref:`enable the add-on <config-addon>` (Scrapy ≥ 2.10) or :ref:`configure all
-components separately <config-components>`.
+:ref:`enable the add-on <config-addon>` or :ref:`configure all components
+separately <config-components>`.
 
 .. warning:: :ref:`reactor-change`.
 
@@ -105,9 +103,8 @@ To use `x402 <https://www.x402.org/>`__ instead, see :ref:`x402`.
 Enabling the add-on
 -------------------
 
-If you are using Scrapy 2.10 or higher, you can set up scrapy-zyte-api
-integration using the following :ref:`add-on <topics-addons>` with any
-priority:
+You can set up scrapy-zyte-api integration using the following :ref:`add-on
+<topics-addons>` with any priority:
 
 .. code-block:: python
     :caption: settings.py
@@ -172,14 +169,17 @@ If you already had a custom value for :setting:`REQUEST_FINGERPRINTER_CLASS
 
     ZYTE_API_FALLBACK_REQUEST_FINGERPRINTER_CLASS = "myproject.CustomRequestFingerprinter"
 
-For :ref:`session management support <session>`, add the following downloader
-middleware to the :setting:`DOWNLOADER_MIDDLEWARES
-<scrapy:DOWNLOADER_MIDDLEWARES>` setting:
+For :ref:`session management support <session>`, add
+:class:`~scrapy_zyte_api.ScrapyZyteAPISessionDownloaderMiddleware` to the
+:setting:`DOWNLOADER_MIDDLEWARES <scrapy:DOWNLOADER_MIDDLEWARES>` setting,
+alongside the main downloader middleware:
 
 .. code-block:: python
     :caption: settings.py
 
     DOWNLOADER_MIDDLEWARES = {
+        "scrapy_zyte_api.ScrapyZyteAPISessionResetterDownloaderMiddleware": 565,
+        "scrapy_zyte_api.ScrapyZyteAPIDownloaderMiddleware": 633,
         "scrapy_zyte_api.ScrapyZyteAPISessionDownloaderMiddleware": 667,
     }
 

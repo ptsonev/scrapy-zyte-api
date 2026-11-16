@@ -4,26 +4,25 @@ from unittest import SkipTest
 import pytest
 from packaging.version import Version
 from scrapy import Request, Spider
+from scrapy.exceptions import ScrapyDeprecationWarning
 from scrapy.http.response import Response
 from scrapy.item import Item
-from scrapy.utils.defer import deferred_f_from_coro_f
+from scrapy.utils.misc import build_from_crawler
 from scrapy.utils.test import get_crawler
 
 from scrapy_zyte_api import (
     ScrapyZyteAPIDownloaderMiddleware,
     ScrapyZyteAPISpiderMiddleware,
 )
-from scrapy_zyte_api.utils import (  # type: ignore[attr-defined]
+from scrapy_zyte_api.responses import ZyteAPIResponse
+from scrapy_zyte_api.utils import (
     _GET_SLOT_NEEDS_SPIDER,
-    _PROCESS_SPIDER_OUTPUT_ASYNC_SUPPORT,
     _PROCESS_SPIDER_OUTPUT_REQUIRES_SPIDER,
     _PROCESS_START_REQUIRES_SPIDER,
-    _START_REQUESTS_CAN_YIELD_ITEMS,
-    _build_from_crawler,
     maybe_deferred_to_future,
 )
 
-from . import SETTINGS, process_request
+from . import SETTINGS, deferred_f_from_coro_f, process_request
 from .mockserver import DelayedResource, MockServer
 
 
@@ -41,29 +40,22 @@ async def aiter_(list_):
 
 
 async def start_request_processor(middleware, request: Request):
-    if hasattr(middleware, "process_start"):
-        args = (None,) if _PROCESS_START_REQUIRES_SPIDER else ()
-        result = [
-            request
-            async for request in middleware.process_start(aiter_([request]), *args)
-        ]
-    else:
-        result = list(middleware.process_start_requests([request], None))
+    args = (None,) if _PROCESS_START_REQUIRES_SPIDER else ()
+    result = [
+        request async for request in middleware.process_start(aiter_([request]), *args)
+    ]
     assert result == [request]
 
 
 async def spider_output_processor(middleware, request: Request):
     response = Response("https://example.com")
     args = (None,) if _PROCESS_SPIDER_OUTPUT_REQUIRES_SPIDER else ()
-    if _PROCESS_SPIDER_OUTPUT_ASYNC_SUPPORT:
-        result = [
-            request
-            async for request in middleware.process_spider_output_async(
-                response, aiter_([request]), *args
-            )
-        ]
-    else:
-        result = list(middleware.process_spider_output(response, [request], *args))
+    result = [
+        request
+        async for request in middleware.process_spider_output_async(
+            response, aiter_([request]), *args
+        )
+    ]
     assert result == [request]
 
 
@@ -93,10 +85,14 @@ async def test_preserve_delay(mw_cls, processor, settings, preserve):
     assert crawler.spider
     spider = crawler.spider
 
-    middleware = _build_from_crawler(mw_cls, crawler)
+    middleware = build_from_crawler(mw_cls, crawler)
 
     # AutoThrottle does this.
-    spider.download_delay = 5  # type: ignore[attr-defined]
+    downloader = crawler.engine.downloader
+    if hasattr(downloader, "_delay"):
+        downloader._delay = 5
+    else:  # Scrapy < 2.17
+        spider.download_delay = 5  # type: ignore[attr-defined]
 
     # No effect on non-Zyte-API requests
     request = Request("https://example.com")
@@ -104,7 +100,7 @@ async def test_preserve_delay(mw_cls, processor, settings, preserve):
     assert "download_slot" not in request.meta
     args = (crawler.spider,) if _GET_SLOT_NEEDS_SPIDER else ()
     _, slot = crawler.engine.downloader._get_slot(request, *args)
-    assert slot.delay == spider.download_delay  # type: ignore[attr-defined]
+    assert slot.delay == 5
 
     # On Zyte API requests, the download slot is changed, and its delay may be
     # set to 0 depending on settings.
@@ -150,7 +146,7 @@ async def test_cookies():
     settings = {"ZYTE_API_EXPERIMENTAL_COOKIES_ENABLED": True}
     crawler = get_crawler(settings_dict=settings)
     await maybe_deferred_to_future(crawler.crawl("a"))
-    middleware = _build_from_crawler(ScrapyZyteAPIDownloaderMiddleware, crawler)
+    middleware = build_from_crawler(ScrapyZyteAPIDownloaderMiddleware, crawler)
     request = Request(
         "https://example.com", cookies={"a": "b"}, meta={"zyte_api_automap": True}
     )
@@ -505,7 +501,33 @@ async def test_spm_conflict_crawlera(setting, attribute, conflict):
     )
 
 
-@pytest.mark.skipif(not _START_REQUESTS_CAN_YIELD_ITEMS, reason="Scrapy < 2.12")
+@pytest.mark.parametrize(
+    ("response_cls", "response_url", "should_log"),
+    [
+        (Response, "https://redirected.example", False),
+        (ZyteAPIResponse, "https://example.com/", False),
+        (ZyteAPIResponse, "https://redirected.example", True),
+    ],
+)
+@deferred_f_from_coro_f
+async def test_redirect_logging(caplog, response_cls, response_url, should_log):
+    crawler = get_crawler(settings_dict={"ZYTE_API_KEY": "a"})
+    middleware = build_from_crawler(ScrapyZyteAPIDownloaderMiddleware, crawler)
+    request = Request("https://example.com/")
+    response: ZyteAPIResponse | Response
+    if response_cls is ZyteAPIResponse:
+        response = ZyteAPIResponse(
+            url=response_url, raw_api_response={"url": response_url}
+        )
+    else:
+        response = Response(response_url)
+    with caplog.at_level("DEBUG", logger="scrapy_zyte_api._middlewares"):
+        middleware.process_response(request, response)
+    assert ("Redirecting" in caplog.text) == should_log
+    if should_log:
+        assert f"Redirecting to {response} from {request}" in caplog.text
+
+
 @deferred_f_from_coro_f
 async def test_start_requests_items():
     class TestSpider(Spider):
@@ -523,3 +545,28 @@ async def test_start_requests_items():
     assert crawler.stats is not None
     assert crawler.stats.get_value("finish_reason") == "finished"
     assert "log_count/ERROR" not in crawler.stats.get_stats()
+
+
+@deferred_f_from_coro_f
+async def test_slot_request_spider():
+    crawler = get_crawler()
+    await maybe_deferred_to_future(crawler.crawl("a"))
+    middleware = build_from_crawler(ScrapyZyteAPIDownloaderMiddleware, crawler)
+    request = Request("https://example.com")
+    with pytest.warns(ScrapyDeprecationWarning, match="slot_request"):
+        middleware.slot_request(request, crawler.spider)
+
+
+@deferred_f_from_coro_f
+async def test_process_start_requests():
+    """Scrapy 2.13–2.15 call process_start_requests() instead of
+    process_start() if another spider middleware only defines the former. It
+    flags start requests and yields items back untouched."""
+    crawler = get_crawler()
+    await maybe_deferred_to_future(crawler.crawl("a"))
+    middleware = build_from_crawler(ScrapyZyteAPISpiderMiddleware, crawler)
+    request = Request("https://example.com")
+    item = Item()
+    output = list(middleware.process_start_requests([request, item], crawler.spider))
+    assert output == [request, item]
+    assert request.meta["is_start_request"] is True

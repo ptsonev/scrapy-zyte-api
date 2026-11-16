@@ -15,18 +15,23 @@ from scrapy.downloadermiddlewares.httpcompression import ACCEPTED_ENCODINGS
 from scrapy.exceptions import CloseSpider
 from scrapy.http import Response, TextResponse
 from scrapy.http.cookies import CookieJar
+from scrapy.settings import Settings
 from scrapy.settings.default_settings import DEFAULT_REQUEST_HEADERS
 from scrapy.settings.default_settings import USER_AGENT as DEFAULT_USER_AGENT
-from scrapy.utils.defer import deferred_f_from_coro_f
 from twisted.internet.defer import Deferred, succeed
 from zyte_api import RequestError
 
+import scrapy_zyte_api._params as params_module
 from scrapy_zyte_api._cookies import _get_cookie_jar
-from scrapy_zyte_api._params import ANY_VALUE, _ParamParser
+from scrapy_zyte_api._params import (
+    ANY_VALUE,
+    _iter_ban_sensitive_headers_in_params,
+    _load_mw_skip_headers,
+    _ParamParser,
+)
 from scrapy_zyte_api.handler import _ScrapyZyteAPIBaseDownloadHandler
 from scrapy_zyte_api.responses import _process_response
 from scrapy_zyte_api.utils import (
-    _ADDON_SUPPORT,
     _DOWNLOAD_REQUEST_RETURNS_DEFERRED,
     maybe_deferred_to_future,
 )
@@ -36,6 +41,7 @@ from . import (
     SETTINGS,
     SETTINGS_T,
     UNSET,
+    deferred_f_from_coro_f,
     download_request,
     get_crawler,
     get_download_handler,
@@ -146,7 +152,7 @@ async def request_to_params(
         param_sets.append(params)
 
     crawler = await get_crawler(
-        settings, spider_cls=TestSpider, setup_engine=False, use_addon=_ADDON_SUPPORT
+        settings, spider_cls=TestSpider, setup_engine=False, use_addon=True
     )
     crawler.signals.connect(track_params, signal=params_signal)
     await maybe_deferred_to_future(crawler.crawl())
@@ -231,7 +237,10 @@ async def test_response_html(meta: dict[str, dict[str, Any]], mockserver):
     assert resp.css("h1 ::text").get() == "World!"
     assert resp.xpath("//body/text()").getall() == ["Hello"]
     if meta.get("httpResponseHeaders", False) is True:
-        assert resp.headers == {b"Test_Header": [b"test_value"]}
+        # lowercase manually as Scrapy <= 2.19 capitalizes header names
+        assert {k.lower(): v for k, v in resp.headers.items()} == {
+            b"test_header": [b"test_value"]
+        }
     else:
         assert not resp.headers
 
@@ -292,7 +301,7 @@ async def test_coro_handling(zyte_api: bool, mockserver):
             TypeError,
             (
                 "Got an error when processing Zyte API request "
-                "(http://example.com): Object of type Request is not JSON "
+                "(http://example.com/): Object of type Request is not JSON "
                 "serializable"
             ),
         ),
@@ -302,7 +311,7 @@ async def test_coro_handling(zyte_api: bool, mockserver):
             (
                 "Got Zyte API error (status=422, type='/request/unprocessable'"
                 ", request_id='abcd1234') while processing URL "
-                "(http://example.com): Incompatible parameters were found in "
+                "(http://example.com/): Incompatible parameters were found in "
                 "the request."
             ),
         ),
@@ -317,7 +326,7 @@ async def test_exceptions(
 ):
     caplog.set_level("DEBUG")
     async with mockserver.make_handler() as handler:
-        req = Request("http://example.com", method="POST", meta=meta)
+        req = Request("http://example.com/", method="POST", meta=meta)
         with pytest.raises(exception_type):
             await download_request(handler, req)
         assert exception_text in caplog.text
@@ -393,6 +402,9 @@ SKIP_HEADERS = {
 JOB_ID = None
 COOKIES_ENABLED = False
 MAX_COOKIES = 100
+MAX_COOKIE_NAME_LENGTH = 4085
+MAX_COOKIE_VALUE_LENGTH = 4085
+MAX_COOKIE_BYTES = 4097
 GET_API_PARAMS_KWARGS = {
     "default_params": DEFAULT_PARAMS,
     "transparent_mode": TRANSPARENT_MODE,
@@ -402,6 +414,9 @@ GET_API_PARAMS_KWARGS = {
     "job_id": JOB_ID,
     "cookies_enabled": COOKIES_ENABLED,
     "max_cookies": MAX_COOKIES,
+    "max_cookie_name_length": MAX_COOKIE_NAME_LENGTH,
+    "max_cookie_value_length": MAX_COOKIE_VALUE_LENGTH,
+    "max_cookie_bytes": MAX_COOKIE_BYTES,
 }
 
 
@@ -421,6 +436,9 @@ async def test_param_parser_input_custom(mockserver):
         "ZYTE_API_BROWSER_HEADERS": {"B": "b"},
         "ZYTE_API_DEFAULT_PARAMS": {"a": "b"},
         "ZYTE_API_MAX_COOKIES": 1,
+        "ZYTE_API_MAX_COOKIE_NAME_LENGTH": 10,
+        "ZYTE_API_MAX_COOKIE_VALUE_LENGTH": 20,
+        "ZYTE_API_MAX_COOKIE_BYTES": 500,
         "ZYTE_API_SKIP_HEADERS": {"A"},
         "ZYTE_API_TRANSPARENT_MODE": True,
     }
@@ -431,6 +449,9 @@ async def test_param_parser_input_custom(mockserver):
         assert parser._cookies_enabled is True
         assert parser._default_params == {"a": "b"}
         assert parser._max_cookies == 1
+        assert parser._max_cookie_name_length == 10
+        assert parser._max_cookie_value_length == 20
+        assert parser._max_cookie_bytes == 500
         assert parser._http_skip_headers == {
             b"a": ANY_VALUE,
         }
@@ -454,16 +475,15 @@ async def test_param_parser_output_side_effects(output, uses_zyte_api, mockserve
         handler._param_parser = mock.Mock()
         handler._param_parser.parse = mock.Mock(return_value=output)
         handler._download_request = mock.AsyncMock(side_effect=RuntimeError)
-        handler._fallback_handler = mock.Mock()
-        handler._fallback_handler.download_request = mock.AsyncMock(
-            side_effect=RuntimeError
-        )
+        fallback_handler = mock.Mock()
+        fallback_handler.download_request = mock.AsyncMock(side_effect=RuntimeError)
+        handler._get_fallback_handler = mock.Mock(return_value=fallback_handler)
         with pytest.raises(RuntimeError):
             await download_request(handler, request)
     if uses_zyte_api:
         handler._download_request.assert_called()
     else:
-        handler._fallback_handler.download_request.assert_called()
+        fallback_handler.download_request.assert_called()
 
 
 DEFAULT_AUTOMAP_PARAMS: dict[str, Any] = {
@@ -558,7 +578,7 @@ async def test_transparent_mode_toggling(setting, meta, expected):
     param_parser = handler._param_parser
     func = partial(param_parser.parse, request)
     if isclass(expected):
-        with pytest.raises(expected):
+        with pytest.raises(expected):  # type: ignore[type-var]
             func()
     else:
         api_params = func()
@@ -2381,6 +2401,20 @@ async def test_automap_header_settings(
     )
 
 
+def test_iter_ban_sensitive_headers_in_params():
+    """Headers without a name are ignored, and a header defined both as a
+    custom HTTP request header and as a request header is only reported once."""
+    params = {
+        "customHttpRequestHeaders": [
+            {"value": "es"},
+            {"name": "Accept-Language", "value": "es"},
+            {"name": "Referer", "value": "https://example.com"},
+        ],
+        "requestHeaders": {"acceptLanguage": "es", "referer": "https://example.com"},
+    }
+    assert list(_iter_ban_sensitive_headers_in_params(params)) == [b"accept-language"]
+
+
 @deferred_f_from_coro_f
 async def test_ban_sensitive_header_warning_user_agent_setting(caplog):
     await _test_param_processing(
@@ -2476,6 +2510,204 @@ async def test_ban_sensitive_header_warning_disabled(caplog):
         [],
         caplog,
     )
+
+
+@deferred_f_from_coro_f
+async def test_session_context_params_warning_no_mismatch(caplog):
+    """No warning when sessionContextParameters is consistent across requests
+    with the same sessionContext."""
+    crawler = await get_crawler({"ZYTE_API_TRANSPARENT_MODE": True})
+    param_parser = _ParamParser(crawler)
+    context = [{"name": "region", "value": "US"}]
+    params = {"sessionContextParameters": {"foo": "bar"}, "sessionContext": context}
+    request1 = Request(url="https://example.com", meta={"zyte_api": params})
+    request2 = Request(url="https://example.com/2", meta={"zyte_api": params})
+    with caplog.at_level("WARNING"):
+        param_parser.parse(request1)
+        param_parser.parse(request2)
+    assert not caplog.records
+
+
+@deferred_f_from_coro_f
+async def test_session_context_params_warning_no_params(caplog):
+    """No warning when sessionContextParameters is consistently absent."""
+    crawler = await get_crawler({"ZYTE_API_TRANSPARENT_MODE": True})
+    param_parser = _ParamParser(crawler)
+    context = [{"name": "region", "value": "US"}]
+    request1 = Request(
+        url="https://example.com", meta={"zyte_api": {"sessionContext": context}}
+    )
+    request2 = Request(
+        url="https://example.com/2", meta={"zyte_api": {"sessionContext": context}}
+    )
+    with caplog.at_level("WARNING"):
+        param_parser.parse(request1)
+        param_parser.parse(request2)
+    assert not caplog.records
+
+
+@deferred_f_from_coro_f
+async def test_session_context_params_warning_mismatch(caplog):
+    """Warning when sessionContextParameters differs across requests with the
+    same sessionContext."""
+    crawler = await get_crawler({"ZYTE_API_TRANSPARENT_MODE": True})
+    param_parser = _ParamParser(crawler)
+    context = [{"name": "region", "value": "US"}]
+    request1 = Request(
+        url="https://example.com",
+        meta={
+            "zyte_api": {
+                "sessionContext": context,
+                "sessionContextParameters": {"foo": "bar"},
+            }
+        },
+    )
+    request2 = Request(
+        url="https://example.com/2",
+        meta={
+            "zyte_api": {
+                "sessionContext": context,
+                "sessionContextParameters": {"foo": "baz"},
+            }
+        },
+    )
+    with caplog.at_level("WARNING"):
+        param_parser.parse(request1)
+        param_parser.parse(request2)
+    assert "sessionContext" in caplog.text
+    assert "server-managed-sessions" in caplog.text
+
+
+@deferred_f_from_coro_f
+async def test_session_context_params_warning_once(caplog):
+    """Warning fires only once per sessionContext value, even across many
+    requests with differing sessionContextParameters."""
+    crawler = await get_crawler({"ZYTE_API_TRANSPARENT_MODE": True})
+    param_parser = _ParamParser(crawler)
+    context = [{"name": "region", "value": "US"}]
+
+    def make_request(url, params_value):
+        return Request(
+            url=url,
+            meta={
+                "zyte_api": {
+                    "sessionContext": context,
+                    "sessionContextParameters": {"foo": params_value},
+                }
+            },
+        )
+
+    with caplog.at_level("WARNING"):
+        param_parser.parse(make_request("https://example.com/1", "bar"))
+        param_parser.parse(make_request("https://example.com/2", "baz"))
+        param_parser.parse(make_request("https://example.com/3", "qux"))
+    assert caplog.text.count("server-managed-sessions") == 1
+
+
+@deferred_f_from_coro_f
+async def test_session_context_params_warning_mismatch_omit_vs_set(caplog):
+    """Warning when sessionContextParameters is absent for one request and
+    present for another with the same sessionContext."""
+    crawler = await get_crawler({"ZYTE_API_TRANSPARENT_MODE": True})
+    param_parser = _ParamParser(crawler)
+    context = [{"name": "region", "value": "US"}]
+    request1 = Request(
+        url="https://example.com",
+        meta={"zyte_api": {"sessionContext": context}},
+    )
+    request2 = Request(
+        url="https://example.com/2",
+        meta={
+            "zyte_api": {
+                "sessionContext": context,
+                "sessionContextParameters": {"foo": "bar"},
+            }
+        },
+    )
+    with caplog.at_level("WARNING"):
+        param_parser.parse(request1)
+        param_parser.parse(request2)
+    assert "server-managed-sessions" in caplog.text
+
+
+@deferred_f_from_coro_f
+async def test_session_context_params_warning_different_contexts(caplog):
+    """No warning when different sessionContext values use different
+    sessionContextParameters."""
+    crawler = await get_crawler({"ZYTE_API_TRANSPARENT_MODE": True})
+    param_parser = _ParamParser(crawler)
+    request1 = Request(
+        url="https://example.com",
+        meta={
+            "zyte_api": {
+                "sessionContext": [{"name": "region", "value": "US"}],
+                "sessionContextParameters": {"foo": "bar"},
+            }
+        },
+    )
+    request2 = Request(
+        url="https://example.com/2",
+        meta={
+            "zyte_api": {
+                "sessionContext": [{"name": "region", "value": "EU"}],
+                "sessionContextParameters": {"foo": "baz"},
+            }
+        },
+    )
+    with caplog.at_level("WARNING"):
+        param_parser.parse(request1)
+        param_parser.parse(request2)
+    assert not caplog.records
+
+
+@deferred_f_from_coro_f
+async def test_session_context_params_warning_lru(caplog, monkeypatch):
+    """When _MAX_SESSION_CONTEXT_TRACKING is reached, the least recently used
+    entry is evicted to make room for a new one."""
+    monkeypatch.setattr(params_module, "_MAX_SESSION_CONTEXT_TRACKING", 2)
+
+    crawler = await get_crawler({"ZYTE_API_TRANSPARENT_MODE": True})
+    param_parser = _ParamParser(crawler)
+
+    ctx_a = [{"name": "id", "value": "a"}]
+    ctx_b = [{"name": "id", "value": "b"}]
+    ctx_c = [{"name": "id", "value": "c"}]
+
+    def req(url, context, params_value):
+        return Request(
+            url=url,
+            meta={
+                "zyte_api": {
+                    "sessionContext": context,
+                    "sessionContextParameters": {"foo": params_value},
+                }
+            },
+        )
+
+    # Fill to cap: a (LRU) → b (MRU).
+    param_parser.parse(req("https://example.com/1", ctx_a, "bar"))
+    param_parser.parse(req("https://example.com/2", ctx_b, "bar"))
+    assert len(param_parser._session_context_params) == 2
+
+    # Re-access a to make it MRU: b (LRU) → a (MRU).
+    param_parser.parse(req("https://example.com/3", ctx_a, "bar"))
+
+    # Adding c evicts b (the current LRU), not a.
+    param_parser.parse(req("https://example.com/4", ctx_c, "bar"))
+    assert len(param_parser._session_context_params) == 2
+
+    # a is still tracked: a mismatch on it triggers a warning.
+    with caplog.at_level("WARNING"):
+        param_parser.parse(req("https://example.com/5", ctx_a, "different"))
+    assert "server-managed-sessions" in caplog.text
+    caplog.clear()
+
+    # b was evicted; re-encountering it starts fresh (no warning on consistent
+    # params, just as when first seen).
+    with caplog.at_level("WARNING"):
+        param_parser.parse(req("https://example.com/6", ctx_b, "bar"))
+        param_parser.parse(req("https://example.com/7", ctx_b, "bar"))
+    assert not caplog.records
 
 
 @pytest.mark.parametrize(
@@ -3310,6 +3542,111 @@ async def test_automap_cookie_limit(meta, caplog):
     await handler._close()
 
 
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {},
+        {"zyte_api_automap": {"browserHtml": True}},
+    ],
+)
+@deferred_f_from_coro_f
+async def test_automap_cookie_size_limit(meta, caplog):
+    # domain "example.com" = 11 chars; formula: name+1+value+9+11 = name+value+21
+    # With max_cookie_bytes=30, name+value must be <= 9 to pass.
+    settings: dict[str, Any] = {
+        "ZYTE_API_EXPERIMENTAL_COOKIES_ENABLED": True,
+        "ZYTE_API_MAX_COOKIE_BYTES": 30,
+        "ZYTE_API_TRANSPARENT_MODE": True,
+    }
+    crawler = await get_crawler(settings, start_handler=True)
+    cookie_middleware = get_downloader_middleware(crawler, CookiesMiddleware)
+    handler = get_download_handler(crawler, "https")
+    param_parser = handler._param_parser
+    cookiejar = 0
+
+    # Cookie within size limit is kept without a warning.
+    # "ab"="cd": 2+1+2+9+11 = 25 bytes ≤ 30
+    request = Request(
+        url="https://example.com/1",
+        meta={**meta, "cookiejar": cookiejar},
+        cookies={"ab": "cd"},
+    )
+    cookiejar += 1
+    await process_request(cookie_middleware, request)
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        api_params = param_parser.parse(request)
+    assert api_params["experimental"]["requestCookies"] == [
+        {"name": "ab", "value": "cd", "domain": "example.com"}
+    ]
+    assert not caplog.records
+    caplog.clear()
+
+    # Cookie exceeding total serialized size is dropped with a warning.
+    # "ab"="cdefghij": 2+1+8+9+11 = 31 bytes > 30
+    request = Request(
+        url="https://example.com/1",
+        meta={**meta, "cookiejar": cookiejar},
+        cookies={"ab": "cdefghij"},
+    )
+    cookiejar += 1
+    await process_request(cookie_middleware, request)
+    with caplog.at_level("WARNING"):
+        api_params = param_parser.parse(request)
+    assert "requestCookies" not in api_params.get("experimental", {})
+    assert "ab" in caplog.text
+    assert "serialized size" in caplog.text
+    caplog.clear()
+
+    # Short cookie is kept while an oversized one is dropped.
+    request = Request(
+        url="https://example.com/1",
+        meta={**meta, "cookiejar": cookiejar},
+        cookies={"ab": "cd", "ab2": "cdefghij"},
+    )
+    cookiejar += 1
+    await process_request(cookie_middleware, request)
+    with caplog.at_level("WARNING"):
+        api_params = param_parser.parse(request)
+    assert api_params["experimental"]["requestCookies"] == [
+        {"name": "ab", "value": "cd", "domain": "example.com"}
+    ]
+    assert "serialized size" in caplog.text
+    caplog.clear()
+
+    # Cookie with a name exceeding 4085 characters is dropped with a warning.
+    long_name = "a" * 4086
+    request = Request(
+        url="https://example.com/1",
+        meta={**meta, "cookiejar": cookiejar},
+        cookies={long_name: "v"},
+    )
+    cookiejar += 1
+    await process_request(cookie_middleware, request)
+    with caplog.at_level("WARNING"):
+        api_params = param_parser.parse(request)
+    assert "requestCookies" not in api_params.get("experimental", {})
+    assert "name" in caplog.text
+    assert "4086" in caplog.text
+    caplog.clear()
+
+    # Cookie with a value exceeding 4085 characters is dropped with a warning.
+    long_value = "a" * 4086
+    request = Request(
+        url="https://example.com/1",
+        meta={**meta, "cookiejar": cookiejar},
+        cookies={"v": long_value},
+    )
+    cookiejar += 1
+    await process_request(cookie_middleware, request)
+    with caplog.at_level("WARNING"):
+        api_params = param_parser.parse(request)
+    assert "requestCookies" not in api_params.get("experimental", {})
+    assert "value length" in caplog.text
+    caplog.clear()
+    await handler._close()
+
+
 class CustomCookieJar(CookieJar):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -3364,6 +3701,23 @@ async def test_automap_custom_cookie_middleware():
     assert api_params["experimental"]["requestCookies"] == [
         {"name": "z", "value": "y", "domain": "example.com"}
     ]
+    await handler._close()
+
+
+@deferred_f_from_coro_f
+async def test_automap_missing_cookie_middleware():
+    """The cookie middleware that ZYTE_API_COOKIE_MIDDLEWARE points at must be
+    enabled."""
+    mw_cls = CustomCookieMiddleware
+    settings = {
+        "ZYTE_API_COOKIE_MIDDLEWARE": f"{mw_cls.__module__}.{mw_cls.__qualname__}",
+        "ZYTE_API_EXPERIMENTAL_COOKIES_ENABLED": True,
+        "ZYTE_API_TRANSPARENT_MODE": True,
+    }
+    crawler = await get_crawler(settings)
+    handler = get_download_handler(crawler, "https")
+    with pytest.raises(RuntimeError, match=mw_cls.__qualname__):
+        await handler.engine_started()
     await handler._close()
 
 
@@ -3711,6 +4065,22 @@ async def test_middleware_headers_default_custom():
         {"name": "Referer", "value": "https://referrer.example"},
         {"name": "User-Agent", "value": "foo/1.2.3"},
     ]
+
+
+def test_middleware_headers_no_engine():
+    """When reading the engine raises RuntimeError because the crawl has not
+    started, the headers that middlewares set are assumed to be the default
+    ones."""
+
+    class _Crawler:
+        settings = Settings()
+
+        @property
+        def engine(self):
+            raise RuntimeError
+
+    headers = _load_mw_skip_headers(_Crawler())
+    assert headers[b"accept-encoding"] == b", ".join(ACCEPTED_ENCODINGS)
 
 
 @deferred_f_from_coro_f

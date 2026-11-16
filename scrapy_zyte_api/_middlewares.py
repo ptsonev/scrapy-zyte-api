@@ -7,8 +7,8 @@ from scrapy.utils.python import global_object_name
 from zyte_api import RequestError
 
 from ._params import _ParamParser
+from .responses import ZyteAPIMixin
 from .utils import (
-    _AUTOTHROTTLE_DONT_ADJUST_DELAY_SUPPORT,
     _GET_SLOT_NEEDS_SPIDER,
     _LOG_DEFERRED_IS_DEPRECATED,
     _close_spider,
@@ -51,14 +51,10 @@ class _BaseMiddleware:
         if not force and self._param_parser.parse(request) is None:
             return
 
-        if _AUTOTHROTTLE_DONT_ADJUST_DELAY_SUPPORT:
-            request.meta.setdefault("autothrottle_dont_adjust_delay", True)
+        request.meta.setdefault("autothrottle_dont_adjust_delay", True)
 
         downloader = self._crawler.engine.downloader
-        try:
-            slot_id = downloader.get_slot_key(request)
-        except AttributeError:  # Scrapy < 2.12
-            slot_id = downloader._get_slot_key(request, self._crawler.spider)
+        slot_id = downloader.get_slot_key(request)
         if not isinstance(slot_id, str) or not slot_id.startswith(self._slot_prefix):
             slot_id = f"{self._slot_prefix}{slot_id}"
             request.meta["download_slot"] = slot_id
@@ -157,6 +153,16 @@ class ScrapyZyteAPIDownloaderMiddleware(_BaseMiddleware):
             )
 
         self.slot_request(request, force=True)
+
+    def process_response(
+        self, request: Request, response, spider: Spider | None = None
+    ):
+        if isinstance(response, ZyteAPIMixin) and response.url != request.url:
+            logger.debug(
+                f"Redirecting to {response} from {request}",
+                extra={"spider": spider},
+            )
+        return response
 
     def process_exception(
         self, request: Request, exception: Exception, spider: Spider | None = None

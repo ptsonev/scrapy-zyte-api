@@ -1,9 +1,8 @@
 from scrapy import Request, Spider, signals
-from scrapy.utils.defer import deferred_f_from_coro_f
 
 from scrapy_zyte_api.utils import maybe_deferred_to_future
 
-from . import SESSION_SETTINGS, get_crawler
+from . import SESSION_SETTINGS, deferred_f_from_coro_f, get_crawler
 from .helpers import assert_session_stats
 
 
@@ -29,6 +28,7 @@ async def test_session_refresh(mockserver):
         "ZYTE_API_SESSION_MAX_BAD_INITS": 1,
         "ZYTE_API_SESSION_PARAMS": {"url": "https://example.com"},
         "ZYTE_API_SESSION_POOL_SIZE": 1,
+        "ZYTE_API_SESSION_QUEUE_MAX_ATTEMPTS": 10_000,
     }
 
     class TestSpider(Spider):
@@ -72,6 +72,7 @@ async def test_session_refresh_concurrent(mockserver):
         "ZYTE_API_SESSION_MAX_BAD_INITS": 1,
         "ZYTE_API_SESSION_MAX_ERRORS": 1,
         "ZYTE_API_SESSION_POOL_SIZE": 1,
+        "ZYTE_API_SESSION_QUEUE_MAX_ATTEMPTS": 10_000,
         "ZYTE_API_URL": mockserver.urljoin("/"),
     }
 

@@ -1,9 +1,9 @@
 import pytest
 from scrapy import Request, Spider
-from scrapy.core.downloader.handlers.http11 import HTTP11DownloadHandler
 from scrapy.http.response import Response
+from scrapy.settings import SETTINGS_PRIORITIES, Settings
 from scrapy.settings.default_settings import TWISTED_REACTOR
-from scrapy.utils.defer import deferred_f_from_coro_f
+from scrapy.utils.misc import load_object
 from scrapy.utils.test import get_crawler
 from twisted.internet.defer import Deferred, succeed
 
@@ -11,24 +11,32 @@ from scrapy_zyte_api import (
     ScrapyZyteAPIDownloaderMiddleware,
     ScrapyZyteAPIRefererSpiderMiddleware,
     ScrapyZyteAPISessionDownloaderMiddleware,
+    ScrapyZyteAPISessionResetterDownloaderMiddleware,
     ScrapyZyteAPISpiderMiddleware,
 )
+from scrapy_zyte_api.addon import Addon
 from scrapy_zyte_api.handler import ScrapyZyteAPIHTTPDownloadHandler
 from scrapy_zyte_api.utils import (
     _DOWNLOAD_REQUEST_RETURNS_DEFERRED,
-    _POET_ADDON_SUPPORT,
+    _REACTORLESS_SUPPORT,
 )
 
-from . import download_request, get_download_handler, make_handler, serialize_settings
+from . import (
+    _FALLBACK_HANDLER_CLS,
+    _REACTORLESS,
+    _REACTORLESS_HANDLERS,
+    deferred_f_from_coro_f,
+    download_request,
+    get_download_handler,
+    make_handler,
+    serialize_settings,
+)
 from . import get_crawler as get_crawler_zyte_api
 
-pytest.importorskip("scrapy.addons")
-
 try:
-    from scrapy_poet import InjectionMiddleware
+    import scrapy_poet  # noqa: F401
 except ImportError:
     POET = False
-    InjectionMiddleware = None  # type: ignore[assignment,misc]
     ZyteApiProvider: type | None = None
 else:
     POET = True
@@ -49,7 +57,12 @@ async def test_addon(mockserver):
 @deferred_f_from_coro_f
 async def test_addon_disable_transparent(mockserver):
     async with make_handler(
-        {"ZYTE_API_TRANSPARENT_MODE": False}, mockserver.urljoin("/"), use_addon=True
+        {
+            "ZYTE_API_FALLBACK_HTTPS_HANDLER": "tests.test_addon.DummyDownloadHandler",
+            "ZYTE_API_TRANSPARENT_MODE": False,
+        },
+        mockserver.urljoin("/"),
+        use_addon=True,
     ) as handler:
         request = Request("https://toscrape.com")
         await download_request(handler, request)
@@ -66,7 +79,7 @@ async def test_addon_fallback():
     crawler = await get_crawler_zyte_api(use_addon=True)
     handler = get_download_handler(crawler, "http")
     assert isinstance(handler, ScrapyZyteAPIHTTPDownloadHandler)
-    assert isinstance(handler._fallback_handler, HTTP11DownloadHandler)
+    assert load_object(handler._fallback_handler_path) is _FALLBACK_HANDLER_CLS
 
 
 class DummyDownloadHandler:
@@ -94,7 +107,9 @@ async def test_addon_fallback_custom():
     crawler = await get_crawler_zyte_api(settings, use_addon=True)
     handler = get_download_handler(crawler, "http")
     assert isinstance(handler, ScrapyZyteAPIHTTPDownloadHandler)
-    assert isinstance(handler._fallback_handler, DummyDownloadHandler)
+    fallback = handler._get_fallback_handler(Request("http://example.com"))
+    assert isinstance(fallback, DummyDownloadHandler)
+    assert handler._get_fallback_handler(Request("http://example.com")) is fallback
 
 
 @deferred_f_from_coro_f
@@ -105,7 +120,56 @@ async def test_addon_fallback_explicit():
     crawler = await get_crawler_zyte_api(settings, use_addon=True)
     handler = get_download_handler(crawler, "http")
     assert isinstance(handler, ScrapyZyteAPIHTTPDownloadHandler)
-    assert isinstance(handler._fallback_handler, DummyDownloadHandler)
+    fallback = handler._get_fallback_handler(Request("http://example.com"))
+    assert isinstance(fallback, DummyDownloadHandler)
+
+
+def test_addon_fallback_default():
+    """Without user-defined HTTP(S) download handlers, the add-on leaves the
+    fallback settings unset, so that the handlers use the Scrapy defaults,
+    which Scrapy only sets after add-ons run when not using a reactor."""
+    settings = Settings()
+    Addon().update_settings(settings)
+    assert settings.get("ZYTE_API_FALLBACK_HTTP_HANDLER") is None
+    assert settings.get("ZYTE_API_FALLBACK_HTTPS_HANDLER") is None
+
+
+def test_addon_disabled():
+    base = {
+        "DOWNLOAD_HANDLERS": {
+            "http": "scrapy.core.downloader.handlers.http11.HTTP11DownloadHandler",
+            "https": "scrapy.core.downloader.handlers.http11.HTTP11DownloadHandler",
+        },
+    }
+    settings = Settings({**base, "ZYTE_API_ENABLED": False})
+    Addon().update_settings(settings)
+    assert (
+        settings.copy_to_dict()
+        == Settings({**base, "ZYTE_API_ENABLED": False}).copy_to_dict()
+    )
+
+
+@pytest.mark.skipif(
+    not _REACTORLESS_SUPPORT,
+    reason="TWISTED_REACTOR_ENABLED requires Scrapy >= 2.15",
+)
+def test_addon_reactorless():
+    """The add-on forces the asyncio reactor only when a Twisted reactor is in
+    use; with TWISTED_REACTOR_ENABLED=False it must leave TWISTED_REACTOR
+    untouched."""
+    base = {
+        "DOWNLOAD_HANDLERS": {
+            "http": "scrapy.core.downloader.handlers.http11.HTTP11DownloadHandler",
+            "https": "scrapy.core.downloader.handlers.http11.HTTP11DownloadHandler",
+        },
+    }
+    enabled = Settings(base)
+    Addon().update_settings(enabled)
+    assert enabled.getpriority("TWISTED_REACTOR") == SETTINGS_PRIORITIES["addon"]
+
+    disabled = Settings({**base, "TWISTED_REACTOR_ENABLED": False})
+    Addon().update_settings(disabled)
+    assert disabled.getpriority("TWISTED_REACTOR") != SETTINGS_PRIORITIES["addon"]
 
 
 @deferred_f_from_coro_f
@@ -167,13 +231,16 @@ def _test_setting_changes(initial_settings, expected_settings):
     assert actual_settings == expected_settings
 
 
-FALLBACK_HANDLER = "scrapy.core.downloader.handlers.http11.HTTP11DownloadHandler"
 BASE_EXPECTED = {
     "DOWNLOADER_MIDDLEWARES": {
+        ScrapyZyteAPISessionResetterDownloaderMiddleware: 565,
         ScrapyZyteAPIDownloaderMiddleware: 633,
         ScrapyZyteAPISessionDownloaderMiddleware: 667,
     },
     "DOWNLOAD_HANDLERS": {
+        # Without a reactor scrapy.utils.test.get_crawler() sets the download
+        # handlers for that mode before the add-on overrides HTTP(S) ones.
+        **_REACTORLESS_HANDLERS,
         "http": "scrapy_zyte_api.handler.ScrapyZyteAPIHTTPDownloadHandler",
         "https": "scrapy_zyte_api.handler.ScrapyZyteAPIHTTPSDownloadHandler",
     },
@@ -182,11 +249,16 @@ BASE_EXPECTED = {
         ScrapyZyteAPISpiderMiddleware: 100,
         ScrapyZyteAPIRefererSpiderMiddleware: 1000,
     },
-    "ZYTE_API_FALLBACK_HTTPS_HANDLER": FALLBACK_HANDLER,
-    "ZYTE_API_FALLBACK_HTTP_HANDLER": FALLBACK_HANDLER,
     "ZYTE_API_TRANSPARENT_MODE": True,
 }
-if TWISTED_REACTOR != "twisted.internet.asyncioreactor.AsyncioSelectorReactor":
+if _REACTORLESS:
+    # The add-on keeps the HTTP(S) download handlers that get_crawler() sets.
+    BASE_EXPECTED["ZYTE_API_FALLBACK_HTTP_HANDLER"] = _REACTORLESS_HANDLERS["http"]
+    BASE_EXPECTED["ZYTE_API_FALLBACK_HTTPS_HANDLER"] = _REACTORLESS_HANDLERS["https"]
+if (
+    not _REACTORLESS
+    and TWISTED_REACTOR != "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
+):
     BASE_EXPECTED["TWISTED_REACTOR"] = (
         "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
     )
@@ -212,6 +284,7 @@ if TWISTED_REACTOR != "twisted.internet.asyncioreactor.AsyncioSelectorReactor":
                 **BASE_EXPECTED,
                 "DOWNLOADER_MIDDLEWARES": {
                     "builtins.str": 123,
+                    ScrapyZyteAPISessionResetterDownloaderMiddleware: 565,
                     ScrapyZyteAPIDownloaderMiddleware: 633,
                     ScrapyZyteAPISessionDownloaderMiddleware: 667,
                 },
@@ -226,8 +299,9 @@ if TWISTED_REACTOR != "twisted.internet.asyncioreactor.AsyncioSelectorReactor":
             {
                 **BASE_EXPECTED,
                 "DOWNLOADER_MIDDLEWARES": {
-                    ScrapyZyteAPIDownloaderMiddleware: 999,
+                    ScrapyZyteAPISessionResetterDownloaderMiddleware: 565,
                     ScrapyZyteAPISessionDownloaderMiddleware: 667,
+                    ScrapyZyteAPIDownloaderMiddleware: 999,
                 },
             },
         ),
@@ -240,8 +314,9 @@ if TWISTED_REACTOR != "twisted.internet.asyncioreactor.AsyncioSelectorReactor":
             {
                 **BASE_EXPECTED,
                 "DOWNLOADER_MIDDLEWARES": {
-                    "scrapy_zyte_api.ScrapyZyteAPIDownloaderMiddleware": 999,
+                    ScrapyZyteAPISessionResetterDownloaderMiddleware: 565,
                     ScrapyZyteAPISessionDownloaderMiddleware: 667,
+                    "scrapy_zyte_api.ScrapyZyteAPIDownloaderMiddleware": 999,
                 },
             },
         ),
@@ -252,11 +327,44 @@ def test_no_poet_setting_changes(initial_settings, expected_settings):
 
 
 EXPECTED_DOWNLOADER_MIDDLEWARES = {
+    ScrapyZyteAPISessionResetterDownloaderMiddleware: 565,
     ScrapyZyteAPIDownloaderMiddleware: 633,
     ScrapyZyteAPISessionDownloaderMiddleware: 667,
 }
-if not _POET_ADDON_SUPPORT:
-    EXPECTED_DOWNLOADER_MIDDLEWARES[InjectionMiddleware] = 543
+
+_SESSIONS_BASE_EXPECTED = dict(BASE_EXPECTED)
+if POET:
+    _SESSIONS_BASE_EXPECTED["DOWNLOADER_MIDDLEWARES"] = EXPECTED_DOWNLOADER_MIDDLEWARES
+    _SESSIONS_BASE_EXPECTED["SCRAPY_POET_PROVIDERS"] = {ZyteApiProvider: 1100}
+
+
+@pytest.mark.parametrize(
+    ("initial_settings", "expected_settings"),
+    [
+        # Sessions enabled: addon does not set ZYTE_API_SESSION_RETRY_POLICY.
+        (
+            {"ZYTE_API_SESSION_ENABLED": True},
+            {
+                **_SESSIONS_BASE_EXPECTED,
+                "ZYTE_API_SESSION_ENABLED": True,
+            },
+        ),
+        # aggressive_retrying: addon still does not set ZYTE_API_SESSION_RETRY_POLICY.
+        (
+            {
+                "ZYTE_API_SESSION_ENABLED": True,
+                "ZYTE_API_RETRY_POLICY": "zyte_api.aggressive_retrying",
+            },
+            {
+                **_SESSIONS_BASE_EXPECTED,
+                "ZYTE_API_SESSION_ENABLED": True,
+                "ZYTE_API_RETRY_POLICY": "zyte_api.aggressive_retrying",
+            },
+        ),
+    ],
+)
+def test_sessions_setting_changes(initial_settings, expected_settings):
+    _test_setting_changes(initial_settings, expected_settings)
 
 
 @pytest.mark.skipif(
@@ -284,35 +392,15 @@ def test_poet_setting_changes(initial_settings, expected_settings):
 @pytest.mark.parametrize(
     ("manual_settings", "addon_settings"),
     [
+        # Default: addon does not set ZYTE_API_SESSION_RETRY_POLICY.
         (
-            {"ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY"},
+            {},
             {},
         ),
+        # aggressive_retrying: addon still does not set ZYTE_API_SESSION_RETRY_POLICY.
         (
-            {"ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY"},
-            {"ZYTE_API_RETRY_POLICY": "zyte_api.zyte_api_retrying"},
-        ),
-        (
-            {
-                "ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_AGGRESSIVE_RETRY_POLICY"
-            },
             {"ZYTE_API_RETRY_POLICY": "zyte_api.aggressive_retrying"},
-        ),
-        (
-            {"ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY"},
-            {"ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_DEFAULT_RETRY_POLICY"},
-        ),
-        (
-            {
-                "ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_AGGRESSIVE_RETRY_POLICY"
-            },
-            {
-                "ZYTE_API_RETRY_POLICY": "scrapy_zyte_api.SESSION_AGGRESSIVE_RETRY_POLICY"
-            },
-        ),
-        (
-            {"ZYTE_API_RETRY_POLICY": "tests.UNSET"},
-            {"ZYTE_API_RETRY_POLICY": "tests.UNSET"},
+            {"ZYTE_API_RETRY_POLICY": "zyte_api.aggressive_retrying"},
         ),
     ],
 )

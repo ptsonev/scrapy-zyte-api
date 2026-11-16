@@ -1,9 +1,9 @@
 from collections.abc import Iterable
-from enum import Enum
+from enum import StrEnum
 from typing import Any, TypedDict
 
 
-class ExtractFrom(str, Enum):
+class ExtractFrom(StrEnum):
     """:ref:`Annotation <annotations>` to specify the :ref:`extraction source
     <zapi-extract-from>` of an automatic extraction :ref:`input <inputs>`,
     such as :class:`~zyte_common_items.Product` or
@@ -83,6 +83,23 @@ def actions(value: Iterable[Action]) -> tuple[Any, ...]:
     """Convert an iterable of :class:`~scrapy_zyte_api.Action` dicts into a hashable value."""
     # both lists and dicts are not hashable and we need dep types to be hashable
     return tuple(make_hashable(action) for action in value)
+
+
+class NetworkCaptureFilter(TypedDict, total=False):
+    """A filter for :func:`~scrapy_zyte_api.network_capture`.
+
+    See :ref:`network-capture`.
+    """
+
+    filterType: str
+    value: str
+    matchType: str
+    httpResponseBody: bool
+
+
+def network_capture(filters: Iterable[NetworkCaptureFilter]) -> tuple[Any, ...]:
+    """Convert an iterable of :class:`~scrapy_zyte_api.NetworkCaptureFilter` dicts into a hashable value."""
+    return tuple(make_hashable(f) for f in filters)
 
 
 def custom_attrs(
